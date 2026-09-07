@@ -5,14 +5,15 @@ Shader "SandFlowPuzzle/CircularGrains"
         [PerRendererData] _MainTex ("Sand Grid", 2D) = "white" {}
         _Color ("Tint", Color) = (1, 1, 1, 1)
         _BackgroundColor ("Background", Color) = (0.333, 0.333, 0.333, 1)
+        _GrainBackgroundOpacity ("Grain Background Opacity", Range(0, 1)) = 0.4
         _GridSize ("Grid Size", Float) = 70
-        _Radius ("Grain Radius", Range(0.1, 0.7)) = 0.46
+        _Radius ("Grain Radius", Range(0.1, 0.7)) = 0.51
         _EdgeSoftness ("Edge Softness", Range(0.001, 0.15)) = 0.02
-        _LightDirection ("Light Direction (Canvas XYZ)", Vector) = (-0.45, 0.6, 0.8, 0)
+        _LightDirection ("Light Direction (Canvas XYZ)", Vector) = (0.45, 0.6, 0.8, 0)
         _LightColor ("Light Color", Color) = (1, 0.97, 0.92, 1)
-        _AmbientStrength ("Ambient Light", Range(0, 1)) = 0.32
+        _AmbientStrength ("Ambient Light", Range(0, 1)) = 0.12
         _DiffuseStrength ("Diffuse Light", Range(0, 1.5)) = 0.8
-        _SpecularStrength ("Soft Highlight", Range(0, 1)) = 0.28
+        _SpecularStrength ("Soft Highlight", Range(0, 1)) = 0.08
         _Shininess ("Highlight Sharpness", Range(4, 64)) = 20
         _RimStrength ("Edge Reflection", Range(0, 0.5)) = 0.08
         _ContactShade ("Grain Edge Occlusion", Range(0, 1)) = 0.22
@@ -91,6 +92,7 @@ Shader "SandFlowPuzzle/CircularGrains"
             float4 _MainTex_ST;
             fixed4 _Color;
             fixed4 _BackgroundColor;
+            half _GrainBackgroundOpacity;
             fixed4 _TextureSampleAdd;
             float4 _ClipRect;
             float _GridSize;
@@ -165,7 +167,10 @@ Shader "SandFlowPuzzle/CircularGrains"
                 half shadow = 1.0 - smoothstep(0.65, 1.3, shadowDistance);
                 float cellEdge = 0.5 - max(abs(localUV.x), abs(localUV.y));
                 shadow *= smoothstep(0.0, 0.08, cellEdge) * occupied * _ShadowStrength;
-                half3 background = _BackgroundColor.rgb * (1.0h - shadow);
+                // Fill occupied cell corners with a faded version of the grain's base
+                // color so neighboring circles feel connected across their edges.
+                half3 background = lerp(_BackgroundColor.rgb, grain.rgb,
+                    occupied * _GrainBackgroundOpacity) * (1.0h - shadow);
 
                 fixed4 color = lerp(
                     fixed4(background, _BackgroundColor.a),

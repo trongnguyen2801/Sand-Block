@@ -14,7 +14,7 @@ namespace SandFlowPuzzle
 
     public class SandSimulator : MonoBehaviour
     {
-        public const int GRID_SIZE = 20;
+        public const int GRID_SIZE = 30;
         public const int SUB_STEPS = 3;
 
         // Color IDs

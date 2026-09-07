@@ -12,8 +12,11 @@ public class LevelEditorWindow : EditorWindow
 
     // Editor-only state
     private Texture2D sourceTexture;
+    private SandPatternAsset sourcePattern;
     private Texture2D previewTexture;
     private bool dirty;
+    private int selectedPatternColorId = 1;
+    private int patternBrushRadius = 1;
 
     // Bucket selection
     private int selectedBucketIndex = -1;
@@ -230,7 +233,32 @@ public class LevelEditorWindow : EditorWindow
 
     private void DrawImageSection(LevelData level)
     {
-        EditorGUILayout.LabelField("Image Source", EditorStyles.boldLabel);
+        EditorGUILayout.LabelField("Sand Source", EditorStyles.boldLabel);
+
+        EditorGUI.BeginChangeCheck();
+        SandSourceMode sourceMode = (SandSourceMode)EditorGUILayout.EnumPopup(
+            "Source Mode",
+            level.sandSourceMode);
+        if (EditorGUI.EndChangeCheck())
+        {
+            level.sandSourceMode = sourceMode;
+            LoadSourceTextureForSelected();
+            RegeneratePreview();
+            dirty = true;
+        }
+
+        if (level.sandSourceMode == SandSourceMode.Pattern)
+        {
+            DrawPatternSource(level);
+            return;
+        }
+
+        DrawTextureSource(level);
+    }
+
+    private void DrawTextureSource(LevelData level)
+    {
+        EditorGUILayout.Space(3f);
 
         EditorGUI.BeginChangeCheck();
         sourceTexture = (Texture2D)EditorGUILayout.ObjectField("Source Image", sourceTexture, typeof(Texture2D), false);
@@ -282,6 +310,149 @@ public class LevelEditorWindow : EditorWindow
                 }
             }
             EditorGUILayout.EndHorizontal();
+        }
+    }
+
+    private void DrawPatternSource(LevelData level)
+    {
+        EditorGUILayout.Space(3f);
+
+        EditorGUI.BeginChangeCheck();
+        SandPatternAsset selected = (SandPatternAsset)EditorGUILayout.ObjectField(
+            "Pattern File",
+            sourcePattern,
+            typeof(SandPatternAsset),
+            false);
+        if (EditorGUI.EndChangeCheck())
+        {
+            sourcePattern = selected;
+            if (sourcePattern == null)
+            {
+                level.sandPatternResourcePath = "";
+            }
+            else if (TryGetPatternResourcePath(sourcePattern, out string resourcePath))
+            {
+                level.sandPatternResourcePath = resourcePath;
+                ApplyPatternToLevel(level, sourcePattern);
+            }
+            else
+            {
+                EditorUtility.DisplayDialog(
+                    "Pattern must be in Resources",
+                    "Move the Sand Pattern asset into a Resources folder so it can be loaded at runtime.",
+                    "OK");
+                sourcePattern = null;
+            }
+
+            RegeneratePreview();
+            dirty = true;
+        }
+
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("Create Blank Pattern"))
+            CreatePatternAsset(level, false);
+        if (GUILayout.Button("Create From Current Pixels"))
+            CreatePatternAsset(level, true);
+        EditorGUILayout.EndHorizontal();
+
+        if (sourcePattern == null)
+        {
+            EditorGUILayout.HelpBox(
+                "Create or select a Sand Pattern file. Pattern files can contain multiple disconnected color regions and do not require an image.",
+                MessageType.Info);
+            return;
+        }
+
+        sourcePattern.EnsureValidGrid();
+        selectedPatternColorId = Mathf.Clamp(
+            selectedPatternColorId,
+            0,
+            sourcePattern.palette.Count);
+        DrawPatternPalette(level);
+
+        patternBrushRadius = EditorGUILayout.IntSlider("Brush Radius", patternBrushRadius, 0, 5);
+        EditorGUILayout.HelpBox(
+            "Left-drag to paint. Right-drag or select Eraser to remove pixels. Pixel 0 is empty space.",
+            MessageType.None);
+
+        float painterSize = Mathf.Min(440f, Mathf.Max(240f, position.width - 260f));
+        Rect painterRect = GUILayoutUtility.GetRect(
+            painterSize,
+            painterSize,
+            GUILayout.Width(painterSize),
+            GUILayout.Height(painterSize));
+        EditorGUI.DrawRect(painterRect, new Color(0.18f, 0.18f, 0.18f, 1f));
+        if (previewTexture != null)
+            EditorGUI.DrawPreviewTexture(painterRect, previewTexture, null, ScaleMode.StretchToFill);
+        DrawRectBorder(painterRect, new Color(0.55f, 0.6f, 0.68f, 1f), 1f);
+        HandlePatternPainting(level, painterRect);
+
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("Clear Pattern")
+            && EditorUtility.DisplayDialog("Clear Pattern", "Remove every pixel from this pattern?", "Clear", "Cancel"))
+        {
+            for (int i = 0; i < sourcePattern.pixels.Count; i++)
+                sourcePattern.pixels[i] = 0;
+            PatternChanged(level);
+        }
+
+        if (GUILayout.Button("Save Pattern"))
+        {
+            ApplyPatternToLevel(level, sourcePattern);
+            AutoDistributeBuckets(level);
+            EditorUtility.SetDirty(sourcePattern);
+            AssetDatabase.SaveAssets();
+            dirty = true;
+        }
+        EditorGUILayout.EndHorizontal();
+    }
+
+    private void DrawPatternPalette(LevelData level)
+    {
+        EditorGUILayout.Space(4f);
+        EditorGUILayout.LabelField("Paint Color:");
+        EditorGUILayout.BeginHorizontal();
+
+        Color previousBackground = GUI.backgroundColor;
+        GUI.backgroundColor = selectedPatternColorId == 0 ? Color.white : new Color(0.65f, 0.65f, 0.65f);
+        if (GUILayout.Button("Eraser", GUILayout.Width(58f), GUILayout.Height(26f)))
+            selectedPatternColorId = 0;
+        GUI.backgroundColor = previousBackground;
+
+        for (int i = 0; i < sourcePattern.palette.Count; i++)
+        {
+            SerializableColor serializable = sourcePattern.palette[i];
+            Color color = new Color(serializable.r, serializable.g, serializable.b, 1f);
+            Rect swatch = GUILayoutUtility.GetRect(28f, 26f, GUILayout.Width(28f), GUILayout.Height(26f));
+            EditorGUI.DrawRect(swatch, color);
+            if (selectedPatternColorId == i + 1)
+                DrawRectBorder(swatch, Color.white, 3f);
+            if (GUI.Button(swatch, GUIContent.none, GUIStyle.none))
+                selectedPatternColorId = i + 1;
+        }
+
+        GUI.enabled = sourcePattern.palette.Count < byte.MaxValue;
+        if (GUILayout.Button("+", GUILayout.Width(28f), GUILayout.Height(26f)))
+        {
+            sourcePattern.palette.Add(new SerializableColor(1f, 1f, 1f));
+            selectedPatternColorId = sourcePattern.palette.Count;
+            PatternChanged(level);
+        }
+        GUI.enabled = true;
+        EditorGUILayout.EndHorizontal();
+
+        if (selectedPatternColorId > 0 && selectedPatternColorId <= sourcePattern.palette.Count)
+        {
+            SerializableColor current = sourcePattern.palette[selectedPatternColorId - 1];
+            Color edited = new Color(current.r, current.g, current.b, 1f);
+            EditorGUI.BeginChangeCheck();
+            edited = EditorGUILayout.ColorField("Selected Color", edited);
+            if (EditorGUI.EndChangeCheck())
+            {
+                sourcePattern.palette[selectedPatternColorId - 1] =
+                    new SerializableColor(edited.r, edited.g, edited.b);
+                PatternChanged(level);
+            }
         }
     }
 
@@ -680,10 +851,176 @@ public class LevelEditorWindow : EditorWindow
     private void LoadSourceTextureForSelected()
     {
         sourceTexture = null;
+        sourcePattern = null;
         if (selectedIndex < 0 || selectedIndex >= levels.Count) return;
-        string path = levels[selectedIndex].sourceImagePath;
-        if (!string.IsNullOrEmpty(path))
-            sourceTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(path);
+        LevelData level = levels[selectedIndex];
+
+        if (!string.IsNullOrEmpty(level.sourceImagePath))
+            sourceTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(level.sourceImagePath);
+        if (!string.IsNullOrEmpty(level.sandPatternResourcePath))
+            sourcePattern = Resources.Load<SandPatternAsset>(level.sandPatternResourcePath);
+    }
+
+    private void CreatePatternAsset(LevelData level, bool copyCurrentPixels)
+    {
+        const string defaultFolder = "Assets/SandFlowPuzzlePackage/Resources/SandPatterns";
+        if (!AssetDatabase.IsValidFolder(defaultFolder))
+        {
+            AssetDatabase.CreateFolder(
+                "Assets/SandFlowPuzzlePackage/Resources",
+                "SandPatterns");
+        }
+
+        string path = EditorUtility.SaveFilePanelInProject(
+            "Create Sand Pattern",
+            $"{level.levelName}_Pattern",
+            "asset",
+            "Choose where to save the reusable Sand Pattern file.",
+            defaultFolder);
+        if (string.IsNullOrEmpty(path)) return;
+
+        SandPatternAsset pattern = CreateInstance<SandPatternAsset>();
+        pattern.gridSize = SandSimulator.GRID_SIZE;
+        pattern.EnsureValidGrid();
+
+        if (level.palette != null && level.palette.Count > 0)
+            pattern.palette = ClonePalette(level.palette);
+        else
+            pattern.palette = CreateDefaultPatternPalette();
+
+        if (copyCurrentPixels
+            && level.sandGrid != null
+            && level.gridSize > 0
+            && level.sandGrid.Count == level.gridSize * level.gridSize)
+        {
+            pattern.gridSize = level.gridSize;
+            pattern.pixels = new List<byte>(level.sandGrid);
+        }
+
+        AssetDatabase.CreateAsset(pattern, path);
+        AssetDatabase.SaveAssets();
+        sourcePattern = pattern;
+        level.sandSourceMode = SandSourceMode.Pattern;
+
+        if (TryGetPatternResourcePath(pattern, out string resourcePath))
+            level.sandPatternResourcePath = resourcePath;
+
+        ApplyPatternToLevel(level, pattern);
+        AutoDistributeBuckets(level);
+        RegeneratePreview();
+        dirty = true;
+        Selection.activeObject = pattern;
+    }
+
+    private void HandlePatternPainting(LevelData level, Rect painterRect)
+    {
+        Event currentEvent = Event.current;
+        bool isPaintEvent = currentEvent.type == EventType.MouseDown
+            || currentEvent.type == EventType.MouseDrag;
+        if (!isPaintEvent || !painterRect.Contains(currentEvent.mousePosition))
+            return;
+        if (currentEvent.button != 0 && currentEvent.button != 1)
+            return;
+
+        int gridSize = sourcePattern.gridSize;
+        Vector2 local = currentEvent.mousePosition - painterRect.position;
+        int centerX = Mathf.Clamp(
+            Mathf.FloorToInt(local.x / painterRect.width * gridSize),
+            0,
+            gridSize - 1);
+        int centerY = Mathf.Clamp(
+            Mathf.FloorToInt(local.y / painterRect.height * gridSize),
+            0,
+            gridSize - 1);
+        byte colorId = currentEvent.button == 1
+            ? (byte)0
+            : (byte)Mathf.Clamp(selectedPatternColorId, 0, byte.MaxValue);
+
+        for (int offsetY = -patternBrushRadius; offsetY <= patternBrushRadius; offsetY++)
+        {
+            for (int offsetX = -patternBrushRadius; offsetX <= patternBrushRadius; offsetX++)
+            {
+                if (offsetX * offsetX + offsetY * offsetY > patternBrushRadius * patternBrushRadius)
+                    continue;
+
+                int x = centerX + offsetX;
+                int y = centerY + offsetY;
+                if (x < 0 || x >= gridSize || y < 0 || y >= gridSize)
+                    continue;
+                sourcePattern.pixels[y * gridSize + x] = colorId;
+            }
+        }
+
+        PatternChanged(level);
+        currentEvent.Use();
+        Repaint();
+    }
+
+    private void PatternChanged(LevelData level)
+    {
+        ApplyPatternToLevel(level, sourcePattern);
+        EditorUtility.SetDirty(sourcePattern);
+        RegeneratePreview();
+        dirty = true;
+    }
+
+    private static void ApplyPatternToLevel(LevelData level, SandPatternAsset pattern)
+    {
+        if (level == null || pattern == null) return;
+
+        pattern.EnsureValidGrid();
+        level.sandSourceMode = SandSourceMode.Pattern;
+        level.gridSize = pattern.gridSize;
+        level.sandGrid = new List<byte>(pattern.pixels);
+        level.palette = ClonePalette(pattern.palette);
+        if (TryGetPatternResourcePath(pattern, out string resourcePath))
+            level.sandPatternResourcePath = resourcePath;
+    }
+
+    private static List<SerializableColor> ClonePalette(List<SerializableColor> source)
+    {
+        List<SerializableColor> copy = new List<SerializableColor>();
+        if (source == null) return copy;
+
+        for (int i = 0; i < source.Count; i++)
+        {
+            SerializableColor color = source[i];
+            if (color != null)
+                copy.Add(new SerializableColor(color.r, color.g, color.b));
+        }
+        return copy;
+    }
+
+    private static List<SerializableColor> CreateDefaultPatternPalette()
+    {
+        return new List<SerializableColor>
+        {
+            new SerializableColor(33f / 255f, 150f / 255f, 243f / 255f),
+            new SerializableColor(253f / 255f, 251f / 255f, 247f / 255f),
+            new SerializableColor(244f / 255f, 67f / 255f, 54f / 255f),
+            new SerializableColor(255f / 255f, 202f / 255f, 40f / 255f)
+        };
+    }
+
+    private static bool TryGetPatternResourcePath(
+        SandPatternAsset pattern,
+        out string resourcePath)
+    {
+        resourcePath = "";
+        if (pattern == null) return false;
+
+        string assetPath = AssetDatabase.GetAssetPath(pattern).Replace('\\', '/');
+        const string resourcesSegment = "/Resources/";
+        int resourcesIndex = assetPath.IndexOf(
+            resourcesSegment,
+            System.StringComparison.OrdinalIgnoreCase);
+        if (resourcesIndex < 0) return false;
+
+        resourcePath = assetPath.Substring(resourcesIndex + resourcesSegment.Length);
+        int extensionIndex = resourcePath.LastIndexOf('.');
+        if (extensionIndex >= 0)
+            resourcePath = resourcePath.Substring(0, extensionIndex);
+        return !string.IsNullOrEmpty(resourcePath);
     }
 
     private void EnsureGridCellList(LevelData level)

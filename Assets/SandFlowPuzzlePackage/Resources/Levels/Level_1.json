@@ -4928,6 +4928,8 @@
     "desiredColorCount": 4,
     "sourceImagePath": "",
     "quantizationSeed": 0,
+    "sandSourceMode": 0,
+    "sandPatternResourcePath": "",
     "bucketRows": 5,
     "bucketColumns": 5,
     "bucketSpacingX": 0.0,

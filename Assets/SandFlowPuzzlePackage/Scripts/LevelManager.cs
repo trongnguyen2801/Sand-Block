@@ -12,7 +12,8 @@ namespace SandFlowPuzzle
 
         public static int CurrentLevelIndex
         {
-            get => PlayerPrefs.GetInt(PREFS_KEY_CURRENT_LEVEL, 0);
+            // get => PlayerPrefs.GetInt(PREFS_KEY_CURRENT_LEVEL, 0);
+            get => 0;
             private set
             {
                 PlayerPrefs.SetInt(PREFS_KEY_CURRENT_LEVEL, value);
@@ -42,7 +43,10 @@ namespace SandFlowPuzzle
                     {
                         LevelData data = JsonUtility.FromJson<LevelData>(asset.text);
                         if (data != null)
+                        {
+                            ResolveSandSource(data);
                             allLevels.Add(data);
+                        }
                     }
                     catch (System.Exception e)
                     {
@@ -123,6 +127,52 @@ namespace SandFlowPuzzle
             if (parts.Length >= 2 && int.TryParse(parts[parts.Length - 1], out int num))
                 return num;
             return 0;
+        }
+
+        private static void ResolveSandSource(LevelData level)
+        {
+            if (level == null || level.sandSourceMode != SandSourceMode.Pattern)
+                return;
+
+            if (string.IsNullOrEmpty(level.sandPatternResourcePath))
+            {
+                Debug.LogWarning($"[LevelManager] Pattern source is selected for '{level.levelName}', but no pattern file is assigned.");
+                return;
+            }
+
+            SandPatternAsset pattern = Resources.Load<SandPatternAsset>(level.sandPatternResourcePath);
+            if (pattern == null)
+            {
+                Debug.LogWarning(
+                    $"[LevelManager] Could not load sand pattern '{level.sandPatternResourcePath}' for '{level.levelName}'.");
+                return;
+            }
+
+            int expectedCount = pattern.gridSize * pattern.gridSize;
+            if (pattern.gridSize <= 0 || pattern.pixels == null || pattern.pixels.Count != expectedCount)
+            {
+                Debug.LogWarning(
+                    $"[LevelManager] Sand pattern '{pattern.name}' has an invalid grid. Expected {expectedCount} pixels.");
+                return;
+            }
+
+            level.gridSize = pattern.gridSize;
+            level.sandGrid = new List<byte>(pattern.pixels);
+            level.palette = ClonePalette(pattern.palette);
+        }
+
+        private static List<SerializableColor> ClonePalette(List<SerializableColor> source)
+        {
+            List<SerializableColor> result = new List<SerializableColor>();
+            if (source == null) return result;
+
+            for (int i = 0; i < source.Count; i++)
+            {
+                SerializableColor color = source[i];
+                if (color != null)
+                    result.Add(new SerializableColor(color.r, color.g, color.b));
+            }
+            return result;
         }
 
         private static LevelData CreateDefaultLighthouseLevel()
@@ -326,7 +376,10 @@ namespace SandFlowPuzzle
                     string json = System.IO.File.ReadAllText(file);
                     LevelData data = JsonUtility.FromJson<LevelData>(json);
                     if (data != null)
+                    {
+                        ResolveSandSource(data);
                         allLevels.Add(data);
+                    }
                 }
                 catch (System.Exception e)
                 {

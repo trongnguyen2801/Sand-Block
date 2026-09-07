@@ -221,7 +221,7 @@ GameObject:
   m_Component:
   - component: {fileID: 200001}
   m_Layer: 0
-  m_Name: '#16_SandFlowPuzzle'
+  m_Name: SandFlowPuzzle
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0

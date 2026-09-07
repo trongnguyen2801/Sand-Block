@@ -3,6 +3,12 @@ using System.Collections.Generic;
 
 namespace SandFlowPuzzle
 {
+    public enum SandSourceMode
+    {
+        Image = 0,
+        Pattern = 1
+    }
+
     [Serializable]
     public class LevelData
     {
@@ -19,6 +25,11 @@ namespace SandFlowPuzzle
         // Source image (editor-only, path relative to Assets/)
         public string sourceImagePath = "";
         public int quantizationSeed = 0;
+
+        // Optional hand-authored pattern stored below a Resources folder.
+        // Existing levels default to Image, so their JSON remains compatible.
+        public SandSourceMode sandSourceMode = SandSourceMode.Image;
+        public string sandPatternResourcePath = "";
 
         // Bucket grid
         public int bucketRows = 5;
