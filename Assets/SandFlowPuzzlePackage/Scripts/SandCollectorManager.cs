@@ -17,6 +17,11 @@ namespace SandFlowPuzzle
     /// </summary>
     public sealed class SandCollectorManager : MonoBehaviour
     {
+        // Preserve the original grain size at grid 70; lower resolutions use larger grains.
+        private const float FlyingGrainScaleMultiplier = 70f / SandSimulator.GRID_SIZE;
+        private const float FlyingGrainStartScale = 0.055f * FlyingGrainScaleMultiplier;
+        private const float FlyingGrainEndScale = 0.015f * FlyingGrainScaleMultiplier;
+
         private struct FlyingGrain
         {
             public Transform transform;
@@ -559,9 +564,10 @@ namespace SandFlowPuzzle
             if (colorMaterials.TryGetValue(colorId, out Material material))
                 return material;
 
-            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
+            Shader shader = Resources.Load<Shader>("SandFlyingGrains");
+            if (shader == null) shader = Shader.Find("Universal Render Pipeline/Lit");
             if (shader == null) shader = Shader.Find("Standard");
-            material = new Material(shader);
+            material = new Material(shader) { enableInstancing = true };
             Color color = SandSimulator.PaletteColors[colorId];
             if (material.HasProperty("_BaseColor")) material.SetColor("_BaseColor", color);
             else material.color = color;
@@ -684,7 +690,7 @@ namespace SandFlowPuzzle
 
                 GameObject grain = AcquireGrain();
                 grain.transform.position = startPosition;
-                grain.transform.localScale = Vector3.one * 0.055f;
+                grain.transform.localScale = Vector3.one * FlyingGrainStartScale;
                 grain.GetComponent<MeshRenderer>().sharedMaterial = material;
 
                 flyingGrains.Add(new FlyingGrain
@@ -720,7 +726,7 @@ namespace SandFlowPuzzle
                 if (grain.transform != null)
                 {
                     grain.transform.position = position;
-                    grain.transform.localScale = Vector3.one * Mathf.Lerp(0.055f, 0.015f, t);
+                    grain.transform.localScale = Vector3.one * Mathf.Lerp(FlyingGrainStartScale, FlyingGrainEndScale, t);
                 }
 
                 if (t >= 1f || grain.targetBlock == null)
