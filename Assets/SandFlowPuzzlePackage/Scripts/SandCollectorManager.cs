@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
+using UnityEngine.UI;
+using SandFlowPuzzle.BlockAuthoring;
 using UnityEngine.EventSystems;
 using UnityEngine.Rendering;
 using HypercasualGameEngine;
@@ -75,7 +77,11 @@ namespace SandFlowPuzzle
         private readonly List<Texture2D> dogJamSdfTextures = new List<Texture2D>(8);
         private readonly List<Mesh> dogJamMeshes = new List<Mesh>(8);
 
-        private SandSimulator simulator;
+        private IReadOnlyList<SandPictureRuntime> pictures;
+        private readonly Dictionary<int, int> totalColorCounts = new Dictionary<int, int>();
+        public bool HasFlyingGrains => flyingGrains.Count > 0;
+        private BlockXLevelFile authoredBoard;
+        private readonly HashSet<Collider> boardObstacles = new HashSet<Collider>();
         private Camera mainCamera;
         private SandCollectorBlock draggedBlock;
         private Plane dragPlane;
@@ -99,21 +105,34 @@ namespace SandFlowPuzzle
         public float MaxDragSpeed => maxDragSpeed;
         public bool IsDragging => draggedBlock != null;
 
-        public void Initialize(SandSimulator sandSimulator, LevelData levelData, Vector3 sandMin, Vector3 sandMax)
+        public void Initialize(IReadOnlyList<SandPictureRuntime> sandPictures, LevelData levelData, Vector3 sandMin, Vector3 sandMax)
         {
-            simulator = sandSimulator;
+            pictures = sandPictures;
+            totalColorCounts.Clear();
+            foreach (SandPictureRuntime picture in pictures)
+                foreach (var entry in picture.simulator.colorCounts)
+                    totalColorCounts[entry.Key] = totalColorCounts.TryGetValue(entry.Key, out int count)
+                        ? count + entry.Value : entry.Value;
             sandWorldMin = Vector3.Min(sandMin, sandMax);
             sandWorldMax = Vector3.Max(sandMin, sandMax);
             mainCamera = Camera.main;
+            if (levelData != null && !CollectorBoardUtility.TryResolve(levelData, out authoredBoard, out string layoutError))
+            {
+                Debug.LogError($"[SandFlowPuzzle] Invalid collector layout: {layoutError}");
+                gameplayEnabled = false;
+                return;
+            }
+            if (authoredBoard != null) placementGridColumnCount = authoredBoard.grid.columns;
             gameplayEnabled = true;
 
             // Scale the complete DogJam board from the picture width. Grid,
             // visual meshes, colliders and snapping all share this cell size.
             float pictureWidth = sandWorldMax.x - sandWorldMin.x;
-            blockCellSize = Mathf.Max(0.05f, pictureWidth / placementGridColumnCount);
+            blockCellSize = pictureWidth / placementGridColumnCount;
 
             PrepareDogJamVisualAssets();
-            BuildCollectorBlocks();
+            if (authoredBoard != null) BuildAuthoredCollectorBlocks();
+            else BuildCollectorBlocks();
         }
 
         public void SetGameplayEnabled(bool enabled)
@@ -126,6 +145,49 @@ namespace SandFlowPuzzle
             }
         }
 
+        private void BuildAuthoredCollectorBlocks()
+        {
+            playAreaMinZ = authoredBoard.sandInBoard ? sandWorldMin.z
+                : sandWorldMin.z - suctionGap - authoredBoard.grid.rows * blockCellSize;
+            BuildPlacementGrid();
+            var perColor = new Dictionary<int, int>();
+            foreach (var item in authoredBoard.blocks)
+                perColor[item.colorId] = perColor.TryGetValue(item.colorId, out int n) ? n + 1 : 1;
+            var created = new Dictionary<int, int>();
+            for (int i = 0; i < authoredBoard.blocks.Count; i++)
+            {
+                var item = authoredBoard.blocks[i];
+                int minX = int.MaxValue, minY = int.MaxValue, maxX = int.MinValue, maxY = int.MinValue;
+                var shape = new Vector2Int[item.occupiedCells.Count];
+                for (int j = 0; j < shape.Length; j++)
+                {
+                    var cell = item.occupiedCells[j];
+                    shape[j] = new Vector2Int(cell.x, cell.y);
+                    minX = Mathf.Min(minX, cell.x); maxX = Mathf.Max(maxX, cell.x);
+                    minY = Mathf.Min(minY, cell.y); maxY = Mathf.Max(maxY, cell.y);
+                }
+                int count = perColor[item.colorId];
+                int ordinal = created.TryGetValue(item.colorId, out int used) ? used : 0;
+                created[item.colorId] = ordinal + 1;
+                int total = totalColorCounts[item.colorId];
+                int quota = total / count + (ordinal < total % count ? 1 : 0);
+                // HoleGenerator centers its mesh on the shape bounds; translate that center
+                // to the authored cells, retaining BlockX's bottom-left coordinate convention.
+                Vector3 center = new Vector3(
+                    placementGridMinX + (minX + maxX + 1) * 0.5f * blockCellSize,
+                    transform.position.y,
+                    placementGridMinZ + (minY + maxY + 1) * 0.5f * blockCellSize);
+                CreateCollectorBlock(i, item.colorId, quota, shape, center);
+            }
+        }
+
+        private bool IsPlayableCell(int x, int y)
+        {
+            if (x < 0 || y < 0 || x >= placementGridColumns || y >= placementGridRows) return false;
+            return authoredBoard == null || (!SandBoardUtility.IsSandCell(authoredBoard, x, y) && authoredBoard.grid.cells[
+                LevelGridCoordinateUtility.ToIndex(new Vector2Int(x, y), placementGridRows, placementGridColumns)] == 1);
+        }
+
         private void BuildCollectorBlocks()
         {
             blocks.Clear();
@@ -134,7 +196,7 @@ namespace SandFlowPuzzle
             List<int> activeColors = new List<int>();
             for (int colorId = 1; colorId < SandSimulator.PaletteColors.Length; colorId++)
             {
-                if (simulator.colorCounts.TryGetValue(colorId, out int count) && count > 0)
+                if (totalColorCounts.TryGetValue(colorId, out int count) && count > 0)
                     activeColors.Add(colorId);
             }
 
@@ -161,7 +223,7 @@ namespace SandFlowPuzzle
             for (int i = 0; i < blockCount; i++)
             {
                 int colorId = blockColors[i];
-                int colorTotal = simulator.colorCounts[colorId];
+                int colorTotal = totalColorCounts[colorId];
                 int sameColorCount = blocksPerColor[colorId];
                 int colorIndex = createdPerColor.TryGetValue(colorId, out int created) ? created : 0;
                 createdPerColor[colorId] = colorIndex + 1;
@@ -206,7 +268,7 @@ namespace SandFlowPuzzle
                 for (int i = 0; i < activeColors.Count; i++)
                 {
                     int colorId = activeColors[i];
-                    float load = (float)simulator.colorCounts[colorId] / (assigned[colorId] + 1);
+                    float load = (float)totalColorCounts[colorId] / (assigned[colorId] + 1);
                     if (load > bestLoad)
                     {
                         bestLoad = load;
@@ -290,8 +352,8 @@ namespace SandFlowPuzzle
             float gridWidth = placementGridColumns * blockCellSize;
             placementGridMinX = (sandWorldMin.x + sandWorldMax.x - gridWidth) * 0.5f;
 
-            placementGridTopZ = sandWorldMin.z - suctionGap;
-            placementGridRows = Mathf.Max(
+            placementGridTopZ = authoredBoard != null && authoredBoard.sandInBoard ? sandWorldMax.z : sandWorldMin.z - suctionGap;
+            placementGridRows = authoredBoard != null ? authoredBoard.grid.rows : Mathf.Max(
                 1,
                 Mathf.CeilToInt((placementGridTopZ - playAreaMinZ) / blockCellSize));
             placementGridMinZ = placementGridTopZ - placementGridRows * blockCellSize;
@@ -320,6 +382,18 @@ namespace SandFlowPuzzle
                     int cellIndex = row * placementGridColumns + column;
                     int vertexIndex = cellIndex * 4;
                     int triangleIndex = cellIndex * 6;
+                    if (!IsPlayableCell(column, row))
+                    {
+                        var obstacle = new GameObject($"DisabledBoardCell_{column}_{row}");
+                        obstacle.transform.SetParent(transform, false);
+                        obstacle.transform.position = new Vector3(
+                            placementGridMinX + (column + 0.5f) * blockCellSize,
+                            transform.position.y + 0.3f,
+                            placementGridMinZ + (row + 0.5f) * blockCellSize);
+                        var collider = obstacle.AddComponent<BoxCollider>();
+                        collider.size = new Vector3(blockCellSize, 0.8f, blockCellSize);
+                        boardObstacles.Add(collider);
+                    }
                     float minX = placementGridMinX + column * blockCellSize + inset;
                     float maxX = placementGridMinX + (column + 1) * blockCellSize - inset;
                     float minZ = placementGridMinZ + row * blockCellSize + inset;
@@ -374,12 +448,13 @@ namespace SandFlowPuzzle
 
             for (int row = 0; row < placementGridRows; row++)
             {
-                bool isSuctionRow = row == placementGridRows - 1;
+                bool isSuctionRow = (authoredBoard == null || !authoredBoard.sandInBoard) && row == placementGridRows - 1;
                 for (int column = 0; column < placementGridColumns; column++)
                 {
                     Color color = isSuctionRow
                         ? suctionGridColor
                         : ((row + column) & 1) == 0 ? gridColorA : gridColorB;
+                    if (!IsPlayableCell(column, row)) color = new Color(0.08f, 0.09f, 0.11f, 0.85f);
                     SetPlacementGridCellColor(row * placementGridColumns + column, color);
                 }
             }
@@ -578,7 +653,7 @@ namespace SandFlowPuzzle
 
         private void Update()
         {
-            if (simulator == null) return;
+            if (pictures == null) return;
 
             if (gameplayEnabled)
             {
@@ -646,47 +721,95 @@ namespace SandFlowPuzzle
                 suctionCooldowns[block] = cooldown;
                 if (cooldown > 0f) continue;
 
-                if (!BuildContactColumnMask(block, contactGridColumns)) continue;
                 if (!block.TryGetBounds(out Bounds blockBounds)) continue;
-
-                int centerGridX = WorldXToGridX(blockBounds.center.x);
-                extractedPositions.Clear();
-                int extracted = simulator.ExtractExposedPixelsInColumns(
-                    centerGridX,
-                    (byte)block.ColorId,
-                    Mathf.Min(grainsPerSuction, block.Remaining),
-                    extractedPositions,
-                    contactGridColumns);
-                if (extracted <= 0)
+                int budget = Mathf.Min(grainsPerSuction, block.Remaining);
+                int totalExtracted = 0;
+                foreach (SandPictureRuntime picture in pictures)
                 {
-                    suctionCooldowns[block] = suctionInterval;
-                    continue;
+                    if (budget <= 0 || block.IsCompleting) break;
+                    extractedPositions.Clear();
+                    int extracted;
+                    if (authoredBoard != null && authoredBoard.sandInBoard)
+                        extracted = ExtractAtRegionContacts(block, picture, budget);
+                    else
+                    {
+                        if (!BuildContactColumnMask(block, contactGridColumns, picture)) continue;
+                        int centerGridX = WorldXToGridX(blockBounds.center.x, picture);
+                        extracted = picture.simulator.ExtractExposedPixelsInColumns(
+                            centerGridX, (byte)block.ColorId, budget, extractedPositions, contactGridColumns);
+                    }
+                    if (extracted == 0) continue;
+                    SpawnFlyingGrains(block, extractedPositions, picture);
+                    block.Absorb(extracted);
+                    budget -= extracted;
+                    totalExtracted += extracted;
                 }
-
-                SpawnFlyingGrains(block, extractedPositions);
-                block.Absorb(extracted);
                 suctionCooldowns[block] = suctionInterval;
-                if (HypercasualGameEngine.SoundManager.Instance != null)
+                if (totalExtracted > 0 && HypercasualGameEngine.SoundManager.Instance != null)
                     HypercasualGameEngine.SoundManager.Instance.PlaySandFlowSandPour();
             }
         }
 
-        private void SpawnFlyingGrains(SandCollectorBlock block, List<Vector2Int> pixelPositions)
+        private int ExtractAtRegionContacts(SandCollectorBlock block, SandPictureRuntime picture, int budget)
+        {
+            if (picture.mask == null) return 0;
+            int n = SandSimulator.GRID_SIZE;
+            float pixel = (picture.max.x - picture.min.x) / n;
+            int count = 0;
+            for (int y = 0; y < n && count < budget; y++)
+            for (int x = 0; x < n && count < budget; x++)
+            {
+                if (!picture.mask[y * n + x]) continue;
+                float cx = picture.min.x + (x + 0.5f) * pixel;
+                float cz = picture.max.z - (y + 0.5f) * pixel;
+                for (int direction = 0; direction < 4 && count < budget; direction++)
+                {
+                    int dx = direction == 0 ? -1 : direction == 1 ? 1 : 0;
+                    int dy = direction == 2 ? -1 : direction == 3 ? 1 : 0;
+                    int nx = x + dx, ny = y + dy;
+                    if (nx >= 0 && ny >= 0 && nx < n && ny < n && picture.mask[ny * n + nx]) continue;
+                    float edgeX = cx + dx * pixel * 0.5f;
+                    float edgeZ = cz - dy * pixel * 0.5f;
+                    bool contact = false;
+                    foreach (Collider collider in block.CellColliders)
+                    {
+                        if (collider == null || !collider.enabled) continue;
+                        Bounds b = collider.bounds;
+                        float tolerance = blockCellSize * 0.13f;
+                        if (dx != 0)
+                            contact = cz + pixel * 0.45f > b.min.z && cz - pixel * 0.45f < b.max.z
+                                && (dx < 0 ? b.center.x < edgeX && Mathf.Abs(b.max.x - edgeX) <= tolerance
+                                    : b.center.x > edgeX && Mathf.Abs(b.min.x - edgeX) <= tolerance);
+                        else
+                            contact = cx + pixel * 0.45f > b.min.x && cx - pixel * 0.45f < b.max.x
+                                && (dy < 0 ? b.center.z > edgeZ && Mathf.Abs(b.min.z - edgeZ) <= tolerance
+                                    : b.center.z < edgeZ && Mathf.Abs(b.max.z - edgeZ) <= tolerance);
+                        if (contact) break;
+                    }
+                    if (contact) count += picture.simulator.ExtractFromEdge(x, y, -dx, -dy,
+                        (byte)block.ColorId, budget - count, extractedPositions);
+                }
+            }
+            return count;
+        }
+
+        private void SpawnFlyingGrains(SandCollectorBlock block, List<Vector2Int> pixelPositions, SandPictureRuntime picture)
         {
             if (block == null || pixelPositions == null) return;
 
             Material material = GetColorMaterial(block.ColorId);
-            float spawnWorldY = Mathf.Max(sandWorldMin.y, sandWorldMax.y) + 0.05f;
-
+            RawImage image = picture.simulator.GetComponent<RawImage>();
+            Rect rect = image.rectTransform.rect;
             for (int i = 0; i < pixelPositions.Count; i++)
             {
                 Vector2Int gridPosition = pixelPositions[i];
-                float normalizedX = (float)gridPosition.x / (SandSimulator.GRID_SIZE - 1);
-                float normalizedY = (float)gridPosition.y / (SandSimulator.GRID_SIZE - 1);
-                Vector3 startPosition = new Vector3(
-                    Mathf.Lerp(sandWorldMin.x, sandWorldMax.x, normalizedX),
-                    spawnWorldY,
-                    Mathf.Lerp(sandWorldMax.z, sandWorldMin.z, normalizedY));
+                float u = (gridPosition.x + 0.5f) / SandSimulator.GRID_SIZE;
+                float v = 1f - (gridPosition.y + 0.5f) / SandSimulator.GRID_SIZE;
+                float localX = (u - image.uvRect.x) / image.uvRect.width;
+                float localY = (v - image.uvRect.y) / image.uvRect.height;
+                Vector3 startPosition = image.rectTransform.TransformPoint(new Vector3(
+                    Mathf.LerpUnclamped(rect.xMin, rect.xMax, localX),
+                    Mathf.LerpUnclamped(rect.yMin, rect.yMax, localY), 0f));
 
                 GameObject grain = AcquireGrain();
                 grain.transform.position = startPosition;
@@ -770,7 +893,7 @@ namespace SandFlowPuzzle
             grainPool.Push(grain);
         }
 
-        private bool BuildContactColumnMask(SandCollectorBlock block, bool[] columnMask)
+        private bool BuildContactColumnMask(SandCollectorBlock block, bool[] columnMask, SandPictureRuntime picture)
         {
             System.Array.Clear(columnMask, 0, columnMask.Length);
 
@@ -783,7 +906,7 @@ namespace SandFlowPuzzle
                 leadingEdgeZ = Mathf.Max(leadingEdgeZ, cell.bounds.max.z);
             }
 
-            float pictureBottomZ = sandWorldMin.z;
+            float pictureBottomZ = picture.min.z;
             float distanceBelowPicture = pictureBottomZ - leadingEdgeZ;
             if (float.IsNegativeInfinity(leadingEdgeZ)
                 || distanceBelowPicture < suctionGap - contactTolerance
@@ -805,38 +928,38 @@ namespace SandFlowPuzzle
                 if (cell == null || !cell.enabled || !cell.gameObject.activeInHierarchy) continue;
                 if (leadingEdgeZ - cell.bounds.max.z > rowTolerance) continue;
 
-                MarkContactColumns(cell.bounds.min.x, cell.bounds.max.x, columnMask);
+                MarkContactColumns(cell.bounds.min.x, cell.bounds.max.x, columnMask, picture);
                 foundContactCell = true;
             }
 
             if (!foundContactCell && block.TryGetBounds(out Bounds bounds))
             {
-                MarkContactColumns(bounds.min.x, bounds.max.x, columnMask);
+                MarkContactColumns(bounds.min.x, bounds.max.x, columnMask, picture);
                 foundContactCell = true;
             }
 
             return foundContactCell;
         }
 
-        private void MarkContactColumns(float worldMinX, float worldMaxX, bool[] columnMask)
+        private void MarkContactColumns(float worldMinX, float worldMaxX, bool[] columnMask, SandPictureRuntime picture)
         {
-            float clippedMinX = Mathf.Max(worldMinX, sandWorldMin.x);
-            float clippedMaxX = Mathf.Min(worldMaxX, sandWorldMax.x);
+            float clippedMinX = Mathf.Max(worldMinX, picture.min.x);
+            float clippedMaxX = Mathf.Min(worldMaxX, picture.max.x);
             if (clippedMinX > clippedMaxX) return;
 
             float maxGridIndex = SandSimulator.GRID_SIZE - 1;
             int minGridX = Mathf.Clamp(
-                Mathf.CeilToInt(Mathf.InverseLerp(sandWorldMin.x, sandWorldMax.x, clippedMinX) * maxGridIndex),
+                Mathf.CeilToInt(Mathf.InverseLerp(picture.min.x, picture.max.x, clippedMinX) * maxGridIndex),
                 0,
                 SandSimulator.GRID_SIZE - 1);
             int maxGridX = Mathf.Clamp(
-                Mathf.FloorToInt(Mathf.InverseLerp(sandWorldMin.x, sandWorldMax.x, clippedMaxX) * maxGridIndex),
+                Mathf.FloorToInt(Mathf.InverseLerp(picture.min.x, picture.max.x, clippedMaxX) * maxGridIndex),
                 0,
                 SandSimulator.GRID_SIZE - 1);
 
             if (minGridX > maxGridX)
             {
-                int nearest = WorldXToGridX((clippedMinX + clippedMaxX) * 0.5f);
+                int nearest = WorldXToGridX((clippedMinX + clippedMaxX) * 0.5f, picture);
                 columnMask[nearest] = true;
                 return;
             }
@@ -845,9 +968,9 @@ namespace SandFlowPuzzle
                 columnMask[x] = true;
         }
 
-        private int WorldXToGridX(float worldX)
+        private int WorldXToGridX(float worldX, SandPictureRuntime picture)
         {
-            float normalizedX = Mathf.InverseLerp(sandWorldMin.x, sandWorldMax.x, worldX);
+            float normalizedX = Mathf.InverseLerp(picture.min.x, picture.max.x, worldX);
             return Mathf.Clamp(
                 Mathf.RoundToInt(normalizedX * (SandSimulator.GRID_SIZE - 1)),
                 0,
@@ -872,7 +995,7 @@ namespace SandFlowPuzzle
 
             // Keep a deliberate visual gap below the picture. The block collects
             // anywhere inside the suction lane, so it never has to touch the frame.
-            float maxContactZ = sandWorldMin.z - suctionGap;
+            float maxContactZ = authoredBoard != null && authoredBoard.sandInBoard ? sandWorldMax.z : sandWorldMin.z - suctionGap;
             if (requestedBounds.max.z > maxContactZ)
                 requestedPosition.z -= requestedBounds.max.z - maxContactZ;
 
@@ -947,6 +1070,10 @@ namespace SandFlowPuzzle
                 Collider cell = colliders[i];
                 if (cell == null || !cell.enabled) continue;
 
+                int cellX = Mathf.FloorToInt((cell.bounds.center.x - placementGridMinX) / blockCellSize);
+                int cellY = Mathf.FloorToInt((cell.bounds.center.z - placementGridMinZ) / blockCellSize);
+                if (!IsPlayableCell(cellX, cellY)) { collisionFound = true; break; }
+
                 Collider[] overlaps = Physics.OverlapBox(
                     cell.bounds.center,
                     cell.bounds.extents * 0.92f,
@@ -959,6 +1086,7 @@ namespace SandFlowPuzzle
                     Collider overlap = overlaps[j];
                     if (overlap == null || overlap.transform.IsChildOf(block.transform)) continue;
 
+                    if (boardObstacles.Contains(overlap)) { collisionFound = true; break; }
                     SandCollectorBlock otherBlock = overlap.GetComponentInParent<SandCollectorBlock>();
                     if (otherBlock != null && otherBlock != block && !otherBlock.IsCompleting)
                     {

@@ -3,6 +3,7 @@ Shader "SandFlowPuzzle/CircularGrains"
     Properties
     {
         [PerRendererData] _MainTex ("Sand Grid", 2D) = "white" {}
+        _ShapeTex ("Sand Footprint", 2D) = "white" {}
         _Color ("Tint", Color) = (1, 1, 1, 1)
         _BackgroundColor ("Background", Color) = (0.333, 0.333, 0.333, 1)
         _GrainBackgroundOpacity ("Grain Background Opacity", Range(0, 1)) = 0.4
@@ -92,6 +93,7 @@ Shader "SandFlowPuzzle/CircularGrains"
             };
 
             sampler2D _MainTex;
+            sampler2D _ShapeTex;
             float4 _MainTex_ST;
             fixed4 _Color;
             fixed4 _BackgroundColor;
@@ -249,7 +251,7 @@ Shader "SandFlowPuzzle/CircularGrains"
 
                 // Composite in premultiplied form, then return straight alpha for
                 // SrcAlpha blending. Outside the board only grain caps cover the frame.
-                half backgroundAlpha = _BackgroundColor.a * insideBoard;
+                half backgroundAlpha = _BackgroundColor.a * insideBoard * tex2D(_ShapeTex, sampleUV).a;
                 fixed4 color = fixed4(background * backgroundAlpha, backgroundAlpha);
                 color = color * (1.0 - upperLayer.a) + fixed4(upperLayer.rgb * upperLayer.a, upperLayer.a);
                 color = color * (1.0 - currentLayer.a) + fixed4(currentLayer.rgb * currentLayer.a, currentLayer.a);

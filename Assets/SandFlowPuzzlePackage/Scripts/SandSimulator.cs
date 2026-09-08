@@ -27,6 +27,14 @@ namespace SandFlowPuzzle
         }
     }
 
+    public sealed class SandPictureRuntime
+    {
+        public SandSimulator simulator;
+        public Vector3 min;
+        public Vector3 max;
+        public bool[] mask;
+    }
+
     public struct FlyingParticle
     {
         public float x, y;
@@ -87,6 +95,8 @@ namespace SandFlowPuzzle
         public Dictionary<int, int> colorCounts = new Dictionary<int, int>();
 
         private Texture2D texture;
+        private Texture2D shapeTexture;
+        private bool[] shapeMask;
         private Color32[] pixelBuffer;
         private Color32[] flippedPixelBuffer;
         private Material circularGrainMaterial;
@@ -291,6 +301,35 @@ namespace SandFlowPuzzle
             }
         }
 
+        public void SetShapeMask(bool[] mask)
+        {
+            shapeMask = mask;
+            if (mask == null) return;
+            var pixels = new Color32[grid.Length];
+            colorCounts.Clear();
+            for (int y = 0; y < GRID_SIZE; y++) for (int x = 0; x < GRID_SIZE; x++)
+            {
+                int i = y * GRID_SIZE + x;
+                if (!mask[i]) grid[i] = EMPTY;
+                if (grid[i] != EMPTY) colorCounts[grid[i]] = colorCounts.TryGetValue(grid[i], out int count) ? count + 1 : 1;
+                pixels[(GRID_SIZE - 1 - y) * GRID_SIZE + x] = mask[i] ? new Color32(255,255,255,255) : new Color32(0,0,0,0);
+            }
+            shapeTexture = new Texture2D(GRID_SIZE, GRID_SIZE, TextureFormat.RGBA32, false);
+            shapeTexture.filterMode = FilterMode.Point;
+            shapeTexture.wrapMode = TextureWrapMode.Clamp;
+            shapeTexture.SetPixels32(pixels);
+            shapeTexture.Apply(false);
+            if (circularGrainMaterial != null) circularGrainMaterial.SetTexture("_ShapeTex", shapeTexture);
+        }
+
+        // Start at each contacted footprint edge and scan inward through empty sand.
+        // Stop at the first grain (another color blocks suction) or at a shape boundary.
+        public int ExtractFromEdge(int x, int y, int dx, int dy, byte colorId, int budget, List<Vector2Int> extracted)
+        {
+            return SandFlowPuzzle.BlockAuthoring.SandBoardUtility.ExtractFromEdge(
+                grid, shapeMask, x, y, dx, dy, colorId, budget, extracted);
+        }
+
         public void SimulateGravity()
         {
             for (int step = 0; step < SUB_STEPS; step++)
@@ -308,15 +347,15 @@ namespace SandFlowPuzzle
                         if (p == 0) continue;
 
                         int idxDown = (y + 1) * GRID_SIZE + x;
-                        if (grid[idxDown] == 0)
+                        if (grid[idxDown] == 0 && (shapeMask == null || shapeMask[idxDown]))
                         {
                             grid[idxDown] = p;
                             grid[idx] = 0;
                         }
                         else
                         {
-                            bool fallLeft = x > 0 && grid[idxDown - 1] == 0;
-                            bool fallRight = x < GRID_SIZE - 1 && grid[idxDown + 1] == 0;
+                            bool fallLeft = x > 0 && grid[idxDown - 1] == 0 && (shapeMask == null || shapeMask[idxDown - 1]);
+                            bool fallRight = x < GRID_SIZE - 1 && grid[idxDown + 1] == 0 && (shapeMask == null || shapeMask[idxDown + 1]);
 
                             if (fallLeft && fallRight)
                             {
@@ -536,6 +575,7 @@ namespace SandFlowPuzzle
         private void OnDestroy()
         {
             if (texture != null) Destroy(texture);
+            if (shapeTexture != null) Destroy(shapeTexture);
             if (circularGrainMaterial != null) Destroy(circularGrainMaterial);
         }
     }

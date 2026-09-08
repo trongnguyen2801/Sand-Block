@@ -13,7 +13,7 @@ namespace SandFlowPuzzle
         public static int CurrentLevelIndex
         {
             // get => PlayerPrefs.GetInt(PREFS_KEY_CURRENT_LEVEL, 0);
-            get => 0;
+            get => 2;
             private set
             {
                 PlayerPrefs.SetInt(PREFS_KEY_CURRENT_LEVEL, value);
@@ -130,6 +130,14 @@ namespace SandFlowPuzzle
         }
 
         private static void ResolveSandSource(LevelData level)
+        {
+            ResolvePictureSource(level);
+            if (level.sandPictures != null)
+                foreach (SandPictureData picture in level.sandPictures)
+                    ResolvePictureSource(picture);
+        }
+
+        private static void ResolvePictureSource(SandPictureData level)
         {
             if (level == null || level.sandSourceMode != SandSourceMode.Pattern)
                 return;

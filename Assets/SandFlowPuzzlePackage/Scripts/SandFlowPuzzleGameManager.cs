@@ -1,4 +1,6 @@
 using UnityEngine;
+using System.Collections.Generic;
+using SandFlowPuzzle.BlockAuthoring;
 using UnityEngine.UI;
 using UnityEngine.EventSystems;
 using TMPro;
@@ -27,7 +29,7 @@ namespace SandFlowPuzzle
         public int magicBoosterUnlockLevel = 0;
 
         // Runtime references
-        private SandSimulator sandSimulator;
+        private readonly List<SandPictureRuntime> sandPictures = new List<SandPictureRuntime>();
         private SandCollectorManager collectorManager;
         private Transform level1;
         private Vector3 sandWorldMin;
@@ -308,57 +310,51 @@ namespace SandFlowPuzzle
             if (level1 == null) level1 = transform.parent;
             Transform parent3D = level1 != null ? level1 : transform;
 
-            float canvasW = worldCanvas != null ? worldCanvas.rect.width : 3.24f;
-            float displayW = canvasW * 0.84f; // ~2.72
-
-            // ---- Sand Display (dedicated canvas facing camera) ----
-            float sandFrameSize = displayW;
-            float sandInnerSize = sandFrameSize * 0.92f;
-            float sandCenterZ = 1.71f;
-            float sandY = 0.07f;
-
-            // Create a dedicated World Space canvas rotated to face the camera
-            GameObject sandCanvasGo = new GameObject("SandDisplayCanvas");
-            sandCanvasGo.transform.SetParent(parent3D, false);
-            sandCanvasGo.transform.localPosition = new Vector3(0f, 0.45f, 1.71f);
-            sandCanvasGo.transform.localRotation = Quaternion.Euler(-121.084f, 0f, 0f);
-
-            Canvas sandCanvas = sandCanvasGo.AddComponent<Canvas>();
-            sandCanvas.renderMode = RenderMode.WorldSpace;
-            sandCanvas.worldCamera = Camera.main;
-            sandCanvasGo.AddComponent<UnityEngine.UI.GraphicRaycaster>();
-
-            RectTransform sandCanvasRt = sandCanvasGo.GetComponent<RectTransform>();
-            sandCanvasRt.sizeDelta = new Vector2(sandFrameSize, sandFrameSize);
-            sandCanvasRt.localScale = Vector3.one;
-
-            // Background frame
-            Image sandBg = sandCanvasGo.AddComponent<Image>();
-            sandBg.color = new Color(0.91f, 0.95f, 0.98f, 1f);
-            sandBg.raycastTarget = false;
-
-            // Inner sand display (92% of frame)
-            GameObject innerSandGo = new GameObject("SandInner");
-            innerSandGo.transform.SetParent(sandCanvasGo.transform, false);
-            RectTransform innerRt = innerSandGo.AddComponent<RectTransform>();
-            innerRt.anchorMin = new Vector2(0.04f, 0.04f);
-            innerRt.anchorMax = new Vector2(0.96f, 0.96f);
-            innerRt.offsetMin = Vector2.zero;
-            innerRt.offsetMax = Vector2.zero;
-
-            RawImage rawImg = innerSandGo.AddComponent<SandGrainImage>();
-            rawImg.color = Color.white;
-            rawImg.raycastTarget = false;
-            // Flip V to compensate for Euler(-90,0,0) inverting the vertical axis
-            rawImg.uvRect = new Rect(0, 1, 1, -1);
-
-            sandSimulator = innerSandGo.AddComponent<SandSimulator>();
-
-            // Sand display world bounds for flying blocks (convert local to world)
-            float sandHalf = sandInnerSize * 0.5f;
-            Vector3 parentWorldPos = parent3D.position;
-            sandWorldMin = new Vector3(parentWorldPos.x - sandHalf, parentWorldPos.y + sandY, parentWorldPos.z + sandCenterZ - sandHalf);
-            sandWorldMax = new Vector3(parentWorldPos.x + sandHalf, parentWorldPos.y + sandY, parentWorldPos.z + sandCenterZ + sandHalf);
+            LevelData level = LevelManager.GetCurrentLevel();
+            try
+            {
+                SandBoardUtility.EnsureUnified(level);
+                if (!CollectorBoardUtility.TryResolve(level, out _, out string error))
+                    throw new System.InvalidOperationException(error);
+            }
+            catch (System.InvalidOperationException exception)
+            {
+                Debug.LogError($"[SandFlowPuzzle] Board layout: {exception.Message}");
+                return;
+            }
+            var board = level.collectorBoard;
+            FitBoardToCamera(board.grid.columns, board.grid.rows, parent3D.position.y, out sandWorldMin, out sandWorldMax);
+            float cellSize = (sandWorldMax.x - sandWorldMin.x) / board.grid.columns;
+            sandPictures.Clear();
+            for (int index = 0; index < level.PrepareRuntimePictures().Count; index++)
+            {
+                var region = SandBoardUtility.FindRegion(board, index);
+                RectInt bounds = SandBoardUtility.Bounds(region);
+                float side = Mathf.Max(bounds.width, bounds.height) * cellSize;
+                Vector3 min = new Vector3(sandWorldMin.x + bounds.x * cellSize, parent3D.position.y + 0.025f,
+                    sandWorldMin.z + bounds.y * cellSize);
+                GameObject canvasGo = new GameObject($"SandRegion_{index + 1}", typeof(RectTransform), typeof(Canvas));
+                canvasGo.transform.SetParent(parent3D, true);
+                canvasGo.transform.position = min + new Vector3(side * 0.5f, 0, side * 0.5f);
+                canvasGo.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+                canvasGo.transform.localScale = Vector3.one;
+                Canvas canvas = canvasGo.GetComponent<Canvas>();
+                canvas.renderMode = RenderMode.WorldSpace;
+                canvas.worldCamera = Camera.main;
+                RectTransform rect = canvasGo.GetComponent<RectTransform>();
+                rect.sizeDelta = new Vector2(side, side);
+                RawImage image = canvasGo.AddComponent<SandGrainImage>();
+                image.color = Color.white;
+                image.raycastTarget = false;
+                image.uvRect = new Rect(0, 0, 1, 1);
+                sandPictures.Add(new SandPictureRuntime
+                {
+                    simulator = canvasGo.AddComponent<SandSimulator>(),
+                    min = min,
+                    max = min + new Vector3(side, 0, side),
+                    mask = SandBoardUtility.Mask(region)
+                });
+            }
 
             // Remove the old conveyor presentation from the runtime hierarchy.
             SetLegacyObjectActive(parent3D, "ConveyorBelt", false);
@@ -370,6 +366,42 @@ namespace SandFlowPuzzle
             GameObject collectorManagerGo = new GameObject("SandCollectorManagerGO");
             collectorManagerGo.transform.SetParent(parent3D, false);
             collectorManager = collectorManagerGo.AddComponent<SandCollectorManager>();
+        }
+
+        private void FitBoardToCamera(int columns, int rows, float height, out Vector3 min, out Vector3 max)
+        {
+            Camera camera = Camera.main;
+            float width = worldCanvas != null ? worldCanvas.rect.width * 0.94f : 3.05f;
+            float depth = width * 1.65f;
+            Vector3 center = new Vector3(transform.position.x, height, transform.position.z);
+            if (camera != null)
+            {
+                Plane plane = new Plane(Vector3.up, new Vector3(0, height, 0));
+                Vector3[] points = new Vector3[4];
+                bool valid = true;
+                for (int i = 0; i < 4; i++)
+                {
+                    Ray ray = camera.ViewportPointToRay(new Vector3(i % 2 == 0 ? 0.04f : 0.96f, i < 2 ? 0.18f : 0.84f, 0));
+                    if (!plane.Raycast(ray, out float distance)) { valid = false; break; }
+                    points[i] = ray.GetPoint(distance);
+                }
+                if (valid)
+                {
+                    float left = Mathf.Max(Mathf.Min(points[0].x, points[1].x), Mathf.Min(points[2].x, points[3].x));
+                    float right = Mathf.Min(Mathf.Max(points[0].x, points[1].x), Mathf.Max(points[2].x, points[3].x));
+                    float near = (points[0].z + points[1].z) * 0.5f;
+                    float far = (points[2].z + points[3].z) * 0.5f;
+                    if (right > left && Mathf.Abs(far - near) > 0.01f)
+                    {
+                        width = right - left;
+                        depth = Mathf.Abs(far - near);
+                        center = new Vector3((left + right) * 0.5f, height, (near + far) * 0.5f);
+                    }
+                }
+            }
+            float cell = Mathf.Min(width / columns, depth / rows);
+            min = center - new Vector3(columns * cell * 0.5f, 0, rows * cell * 0.5f);
+            max = center + new Vector3(columns * cell * 0.5f, 0, rows * cell * 0.5f);
         }
 
         private static void SetLegacyObjectActive(Transform root, string objectName, bool active)
@@ -473,26 +505,39 @@ namespace SandFlowPuzzle
 
         private void InitializeGame()
         {
-            isGameOver = false;
+            isGameOver = sandPictures.Count == 0;
+            if (isGameOver) return;
 
             LevelData currentLevel = LevelManager.GetCurrentLevel();
-            RawImage rawImg = sandSimulator.GetComponent<RawImage>();
-
-            if (currentLevel != null && currentLevel.sandGrid != null && currentLevel.sandGrid.Count > 0)
+            List<SandPictureData> pictures;
+            try
             {
-                sandSimulator.Initialize(rawImg, currentLevel.sandGrid, currentLevel.palette);
+                bool legacyFallback = currentLevel == null ||
+                    ((currentLevel.sandPictures == null || currentLevel.sandPictures.Count == 0)
+                    && (currentLevel.sandGrid == null || currentLevel.sandGrid.Count == 0));
+                pictures = legacyFallback ? null : currentLevel.PrepareRuntimePictures();
             }
-            else
+            catch (System.InvalidOperationException exception)
             {
-                sandSimulator.Initialize(rawImg);
+                Debug.LogError($"[SandFlowPuzzle] {exception.Message}");
+                isGameOver = true;
+                return;
             }
-
-            collectorManager.Initialize(sandSimulator, currentLevel, sandWorldMin, sandWorldMax);
+            for (int i = 0; i < sandPictures.Count; i++)
+            {
+                SandSimulator simulator = sandPictures[i].simulator;
+                RawImage image = simulator.GetComponent<RawImage>();
+                if (pictures != null) simulator.Initialize(image, pictures[i].sandGrid, pictures[i].palette);
+                else simulator.Initialize(image);
+                simulator.SetShapeMask(sandPictures[i].mask);
+                simulator.RenderToTexture();
+            }
+            collectorManager.Initialize(sandPictures, currentLevel, sandWorldMin, sandWorldMax);
         }
 
         private void Update()
         {
-            if (sandSimulator == null || isGameOver) return;
+            if (sandPictures.Count == 0 || isGameOver) return;
 
             // Ensure World Space Canvas camera stays assigned (Camera.main may resolve late on WebGL)
             if (worldCanvas != null)
@@ -541,10 +586,12 @@ namespace SandFlowPuzzle
                     popupTMP.color = new Color(popupTMP.color.r, popupTMP.color.g, popupTMP.color.b, 0f);
             }
 
-            // Sand gravity, flying-particle physics and rendering remain unchanged.
-            sandSimulator.SimulateGravity();
-            sandSimulator.UpdateParticles();
-            sandSimulator.RenderToTexture();
+            foreach (SandPictureRuntime picture in sandPictures)
+            {
+                picture.simulator.SimulateGravity();
+                picture.simulator.UpdateParticles();
+                picture.simulator.RenderToTexture();
+            }
             CheckGameState();
         }
 
@@ -572,7 +619,10 @@ namespace SandFlowPuzzle
             if (isGameOver) return;
 
             // Check win: all sand empty and no particles
-            if (sandSimulator.IsAllEmpty() && sandSimulator.particles.Count == 0)
+            bool allEmpty = sandPictures.Count > 0;
+            foreach (SandPictureRuntime picture in sandPictures)
+                allEmpty &= picture.simulator.IsAllEmpty() && picture.simulator.particles.Count == 0;
+            if (allEmpty && !collectorManager.HasFlyingGrains)
             {
                 isGameOver = true;
                 if (collectorManager != null) collectorManager.SetGameplayEnabled(false);
