@@ -4,6 +4,29 @@ using System.Collections.Generic;
 
 namespace SandFlowPuzzle
 {
+    // Expand only the rendering mesh: gameplay bounds and cell positions stay unchanged.
+    public class SandGrainImage : RawImage
+    {
+        protected override void OnPopulateMesh(VertexHelper vh)
+        {
+            base.OnPopulateMesh(vh);
+            const float paddingCells = 0.5f;
+            float scale = 1f + 2f * paddingCells / SandSimulator.GRID_SIZE;
+            Vector2 center = GetPixelAdjustedRect().center;
+            Vector2 uvCenter = uvRect.center;
+            UIVertex vertex = default(UIVertex);
+            for (int i = 0; i < vh.currentVertCount; i++)
+            {
+                vh.PopulateUIVertex(ref vertex, i);
+                vertex.position.x = center.x + (vertex.position.x - center.x) * scale;
+                vertex.position.y = center.y + (vertex.position.y - center.y) * scale;
+                vertex.uv0.x = uvCenter.x + (vertex.uv0.x - uvCenter.x) * scale;
+                vertex.uv0.y = uvCenter.y + (vertex.uv0.y - uvCenter.y) * scale;
+                vh.SetUIVertex(vertex, i);
+            }
+        }
+    }
+
     public struct FlyingParticle
     {
         public float x, y;
@@ -14,7 +37,7 @@ namespace SandFlowPuzzle
 
     public class SandSimulator : MonoBehaviour
     {
-        public const int GRID_SIZE = 30;
+        public const int GRID_SIZE = 35;
         public const int SUB_STEPS = 3;
 
         // Color IDs

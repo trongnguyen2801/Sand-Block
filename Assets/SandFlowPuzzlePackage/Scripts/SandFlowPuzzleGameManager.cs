@@ -346,7 +346,7 @@ namespace SandFlowPuzzle
             innerRt.offsetMin = Vector2.zero;
             innerRt.offsetMax = Vector2.zero;
 
-            RawImage rawImg = innerSandGo.AddComponent<RawImage>();
+            RawImage rawImg = innerSandGo.AddComponent<SandGrainImage>();
             rawImg.color = Color.white;
             rawImg.raycastTarget = false;
             // Flip V to compensate for Euler(-90,0,0) inverting the vertical axis
