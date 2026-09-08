@@ -32,6 +32,8 @@ namespace SandFlowPuzzle.BlockAuthoring.EditorTools
         private static readonly Color SelectionOutlineColor = new Color(1f, 0.85f, 0.2f, 1f);
         private static readonly Color DragGhostValidColor = new Color(0.2f, 1f, 0.4f, 0.35f);
         private static readonly Color DragGhostInvalidColor = new Color(1f, 0.3f, 0.3f, 0.35f);
+        private static readonly Color CellSelectionColor = new Color(0.2f, 0.75f, 1f, 0.35f);
+        private static readonly Color CellSelectionBorderColor = new Color(0.2f, 0.75f, 1f, 0.9f);
 
         /// <summary>Pure cell-size computation: base size scaled by zoom, clamped to Min..Max zoom.</summary>
         public static float CellSizeForZoom(float zoom)
@@ -328,6 +330,38 @@ namespace SandFlowPuzzle.BlockAuthoring.EditorTools
             DrawBlockOutline(data, viewport, selectedBlockIndex, SelectionOutlineColor);
         }
 
+        /// <summary>
+        /// Draws the selected cells overlay (translucent fill + border) for the Select Cells mode.
+        /// Each selected cell is highlighted with <see cref="CellSelectionColor"/>.
+        /// </summary>
+        public void DrawCellSelection(BlockXLevelFile data, LevelGridViewport viewport, LevelEditorState state)
+        {
+            if (data == null || data.grid == null || viewport.Rows <= 0 || state == null)
+                return;
+
+            if (state.SelectedCells.Count == 0)
+                return;
+
+            Color prev = GUI.color;
+            try
+            {
+                foreach (var cell in state.SelectedCells)
+                {
+                    if (!LevelGridCoordinateUtility.IsInside(cell, viewport.Rows, viewport.Columns))
+                        continue;
+
+                    GUI.color = CellSelectionColor;
+                    Rect r = viewport.GetCellRect(cell);
+                    GUI.DrawTexture(r, Texture2D.whiteTexture);
+                    DrawRectBorder(r, CellSelectionBorderColor, 2f);
+                }
+            }
+            finally
+            {
+                GUI.color = prev;
+            }
+        }
+
         /// <summary>Deterministic fallback color for a block by its colorId.</summary>
         public System.Func<int, Color> ColorResolver;
 
@@ -342,6 +376,14 @@ namespace SandFlowPuzzle.BlockAuthoring.EditorTools
         {
             Rect r = viewport.GetCellRect(cell);
             return new Rect(r.x + inset, r.y + inset, r.width - inset * 2f, r.height - inset * 2f);
+        }
+
+        internal static void DrawRectBorder(Rect rect, Color color, float thickness)
+        {
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y, rect.width, thickness), color);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.yMax - thickness, rect.width, thickness), color);
+            EditorGUI.DrawRect(new Rect(rect.x, rect.y, thickness, rect.height), color);
+            EditorGUI.DrawRect(new Rect(rect.xMax - thickness, rect.y, thickness, rect.height), color);
         }
 
         /// <summary>

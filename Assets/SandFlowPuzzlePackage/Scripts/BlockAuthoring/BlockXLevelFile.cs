@@ -44,7 +44,20 @@ namespace SandFlowPuzzle.BlockAuthoring
     public sealed class LevelBlockFile
     {
         public int colorId;
+
+        // Optional per-color quotas: colorId -> how many grains THIS block should collect.
+        // When empty/absent, the runtime auto-splits the color's total grain count
+        // evenly among blocks of that color (legacy behavior).
+        public List<BlockColorQuota> colorQuotas = new List<BlockColorQuota>();
+
         public List<LevelCellCoord> occupiedCells = new List<LevelCellCoord>();
+    }
+
+    [Serializable]
+    public sealed class BlockColorQuota
+    {
+        public int colorId;
+        public int quota;
     }
 
     [Serializable]

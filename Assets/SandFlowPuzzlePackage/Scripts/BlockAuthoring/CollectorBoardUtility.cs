@@ -89,6 +89,38 @@ namespace SandFlowPuzzle.BlockAuthoring
                 resolved.blocks[i].colorId = id;
                 blocksPerColor[id] = blocksPerColor.TryGetValue(id, out int n) ? n + 1 : 1;
             }
+            // Re-validate per-color quotas (if explicitly set) against the block count.
+            for (int i = 0; i < resolved.blocks.Count; i++)
+            {
+                var block = resolved.blocks[i];
+                if (block.colorQuotas == null) continue;
+                int totalQuota = 0;
+                var seen = new HashSet<int>();
+                foreach (var q in block.colorQuotas)
+                {
+                    if (q == null || q.quota <= 0)
+                    { error = $"Block #{i + 1} has an invalid color quota."; resolved = null; return false; }
+                    if (!seen.Add(q.colorId))
+                    { error = $"Block #{i + 1} lists color quota {q.colorId} twice."; resolved = null; return false; }
+                    totalQuota += q.quota;
+                }
+                if (totalQuota > (counts.TryGetValue(block.colorId, out int colorGrains) ? colorGrains : 0))
+                { error = $"Block #{i + 1} quota ({totalQuota}) exceeds the {block.colorId} color grain count ({colorGrains})."; resolved = null; return false; }
+            }
+            // Validate total per-color quotas across blocks do not exceed grain totals.
+            var totalByColor = new Dictionary<int, int>();
+            for (int i = 0; i < resolved.blocks.Count; i++)
+            {
+                var block = resolved.blocks[i];
+                foreach (var q in block.colorQuotas)
+                    totalByColor[q.colorId] = totalByColor.TryGetValue(q.colorId, out int t) ? t + q.quota : q.quota;
+            }
+            foreach (var entry in totalByColor)
+            {
+                int total = counts.TryGetValue(entry.Key, out int c) ? c : 0;
+                if (entry.Value > total)
+                { error = $"Color #{entry.Key} total quota ({entry.Value}) exceeds available grains ({total})."; resolved = null; return false; }
+            }
             foreach (var entry in counts)
             {
                 if (!blocksPerColor.TryGetValue(entry.Key, out int n))
@@ -97,6 +129,39 @@ namespace SandFlowPuzzle.BlockAuthoring
                 { error = $"Color #{entry.Key} has more blocks than grains; remove a block of that color."; resolved = null; return false; }
             }
             return true;
+        }
+
+        /// <summary>
+        /// Returns the per-color quotas for a block. When the block has no explicit colorQuotas,
+        /// the color's total grain count is split evenly among all blocks of that color (legacy
+        /// auto-split behavior).
+        /// </summary>
+        public static Dictionary<int, int> ResolveBlockQuotas(BlockXLevelFile board, int blockIndex, Dictionary<int, int> colorGrainCounts)
+        {
+            var result = new Dictionary<int, int>();
+            if (board == null || blockIndex < 0 || blockIndex >= board.blocks.Count) return result;
+            var block = board.blocks[blockIndex];
+            if (block.colorQuotas != null && block.colorQuotas.Count > 0)
+            {
+                foreach (var q in block.colorQuotas)
+                    if (q != null && q.quota > 0)
+                        result[q.colorId] = q.quota;
+                return result;
+            }
+            // Legacy auto-split by block.colorId.
+            int colorId = block.colorId;
+            int total = colorGrainCounts.TryGetValue(colorId, out int t) ? t : 0;
+            int ordinal = 0;
+            int count = 0;
+            for (int i = 0; i < board.blocks.Count; i++)
+            {
+                if (board.blocks[i] != null && board.blocks[i].colorId == colorId) count++;
+                if (i < blockIndex && board.blocks[i] != null && board.blocks[i].colorId == colorId) ordinal++;
+            }
+            if (total <= 0) return result;
+            int quota = total / count + (ordinal < total % count ? 1 : 0);
+            result[colorId] = quota;
+            return result;
         }
     }
 }

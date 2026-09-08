@@ -218,7 +218,6 @@ public partial class LevelEditorWindow : EditorWindow
 
         EditorGUILayout.Space(8);
         DrawPicturesSection(level);
-        DrawTilePainter(GetSelectedPicture());
 
         EditorGUILayout.Space(8);
         DrawCollectorBoardSection(level);
@@ -231,7 +230,7 @@ public partial class LevelEditorWindow : EditorWindow
     }
 
     // =====================================================================
-    // TILE PAINTER
+    // TILE PAINTER (legacy — removed; painting now done via Select Cells mode)
     // =====================================================================
 
     private SandPictureData GetSelectedPicture()
@@ -246,7 +245,7 @@ public partial class LevelEditorWindow : EditorWindow
     {
         if (level.sandPictures == null) level.sandPictures = new List<SandPictureData>();
         EditorGUILayout.LabelField("Picture Tiles", EditorStyles.boldLabel);
-        EditorGUILayout.HelpBox("Paint up to 4 sand pictures, then place their footprints in the board using Sand Tiles.", MessageType.Info);
+        EditorGUILayout.HelpBox("Manage sand pictures here. Use Select Cells mode on the board to paint sand for each picture.", MessageType.Info);
         if (level.sandPictures.Count > 0)
         {
             string[] names = new string[level.sandPictures.Count];
@@ -342,33 +341,6 @@ public partial class LevelEditorWindow : EditorWindow
         }
     }
 
-    private void DrawTilePainter(SandPictureData level)
-    {
-        EditorGUILayout.LabelField($"Paint Tiles ({level.gridSize} × {level.gridSize})", EditorStyles.boldLabel);
-        selectedTileColorId = Mathf.Clamp(selectedTileColorId, 0, level.palette.Count);
-        DrawTilePalette(level);
-        tileBrushRadius = EditorGUILayout.IntSlider("Brush Radius", tileBrushRadius, 0, 5);
-        EditorGUILayout.HelpBox("Choose a color and left-drag to paint. Right-drag or Eraser clears tiles. Save All saves the painting with the level.", MessageType.Info);
-        float size = Mathf.Min(440f, Mathf.Max(240f, position.width - 260f));
-        Rect rect = GUILayoutUtility.GetRect(size, size, GUILayout.Width(size), GUILayout.Height(size));
-        EditorGUI.DrawRect(rect, new Color(0.18f, 0.18f, 0.18f));
-        if (previewTexture != null) EditorGUI.DrawPreviewTexture(rect, previewTexture, null, ScaleMode.StretchToFill);
-        float cellSize = size / level.gridSize;
-        Color gridColor = new Color(0, 0, 0, 0.18f);
-        for (int i = 1; i < level.gridSize; i++)
-        {
-            EditorGUI.DrawRect(new Rect(rect.x + i * cellSize, rect.y, 1, rect.height), gridColor);
-            EditorGUI.DrawRect(new Rect(rect.x, rect.y + i * cellSize, rect.width, 1), gridColor);
-        }
-        DrawRectBorder(rect, Color.gray, 1f);
-        HandleTilePainting(level, rect);
-        if (GUILayout.Button("Clear All Tiles") && EditorUtility.DisplayDialog("Clear Tiles", "Clear every tile in this picture?", "Clear", "Cancel"))
-        {
-            for (int i = 0; i < level.sandGrid.Count; i++) level.sandGrid[i] = 0;
-            TilesChanged(level);
-        }
-    }
-
     private void DrawTilePalette(SandPictureData level)
     {
         EditorGUILayout.Space(4f);
@@ -397,9 +369,18 @@ public partial class LevelEditorWindow : EditorWindow
         GUI.enabled = level.palette.Count < byte.MaxValue;
         if (GUILayout.Button("+", GUILayout.Width(28f), GUILayout.Height(26f)))
         {
-            level.palette.Add(new SerializableColor(1f, 1f, 1f));
-            selectedTileColorId = level.palette.Count;
-            TilesChanged(level);
+            var candidate = new SerializableColor(1f, 1f, 1f);
+            int existing = level.palette.FindIndex(c => CollectorBoardUtility.ColorKey(c) == CollectorBoardUtility.ColorKey(candidate));
+            if (existing >= 0)
+            {
+                selectedTileColorId = existing + 1;
+            }
+            else
+            {
+                level.palette.Add(candidate);
+                selectedTileColorId = level.palette.Count;
+                TilesChanged(Event.current);
+            }
         }
         GUI.enabled = true;
         EditorGUILayout.EndHorizontal();
@@ -412,15 +393,41 @@ public partial class LevelEditorWindow : EditorWindow
             edited = EditorGUILayout.ColorField("Selected Color", edited);
             if (EditorGUI.EndChangeCheck())
             {
-                level.palette[selectedTileColorId - 1] =
-                    new SerializableColor(edited.r, edited.g, edited.b);
-                TilesChanged(level);
+                var editedColor = new SerializableColor(edited.r, edited.g, edited.b);
+                int duplicate = -1;
+                for (int k = 0; k < level.palette.Count; k++)
+                {
+                    if (k == selectedTileColorId - 1) continue;
+                    if (CollectorBoardUtility.ColorKey(level.palette[k]) == CollectorBoardUtility.ColorKey(editedColor))
+                    { duplicate = k; break; }
+                }
+                if (duplicate >= 0)
+                {
+                    // Merge: repaint pixels of the edited swatch to the existing one,
+                    // then remove the edited swatch and shift ids.
+                    int from = selectedTileColorId - 1;
+                    for (int p = 0; p < level.sandGrid.Count; p++)
+                    {
+                        if (level.sandGrid[p] == selectedTileColorId)
+                            level.sandGrid[p] = (byte)(duplicate + 1);
+                        else if (level.sandGrid[p] > selectedTileColorId)
+                            level.sandGrid[p]--;
+                    }
+                    level.palette.RemoveAt(from);
+                    selectedTileColorId = duplicate + 1;
+                    TilesChanged(Event.current);
+                }
+                else
+                {
+                    level.palette[selectedTileColorId - 1] = editedColor;
+                    TilesChanged(Event.current);
+                }
             }
         }
     }
 
     // =====================================================================
-    // BUCKET GRID SECTION
+    // HELPERS
     // =====================================================================
 
     private void DrawRectBorder(Rect rect, Color color, float thickness)
@@ -506,71 +513,6 @@ public partial class LevelEditorWindow : EditorWindow
             DestroyImmediate(previewTexture);
             previewTexture = null;
         }
-    }
-
-    private void HandleTilePainting(SandPictureData level, Rect painterRect)
-    {
-        Event currentEvent = Event.current;
-        if (currentEvent.type == EventType.MouseUp) previousPaintCell = null;
-        bool isPaintEvent = currentEvent.type == EventType.MouseDown
-            || currentEvent.type == EventType.MouseDrag;
-        if (!isPaintEvent || !painterRect.Contains(currentEvent.mousePosition))
-            return;
-        if (currentEvent.button != 0 && currentEvent.button != 1)
-            return;
-
-        int gridSize = level.gridSize;
-        Vector2 local = currentEvent.mousePosition - painterRect.position;
-        int centerX = Mathf.Clamp(
-            Mathf.FloorToInt(local.x / painterRect.width * gridSize),
-            0,
-            gridSize - 1);
-        int centerY = Mathf.Clamp(
-            Mathf.FloorToInt(local.y / painterRect.height * gridSize),
-            0,
-            gridSize - 1);
-        byte colorId = currentEvent.button == 1
-            ? (byte)0
-            : (byte)Mathf.Clamp(selectedTileColorId, 0, byte.MaxValue);
-
-        Vector2Int endCell = new Vector2Int(centerX, centerY);
-        Vector2Int startCell = currentEvent.type == EventType.MouseDrag && previousPaintCell.HasValue
-            ? previousPaintCell.Value : endCell;
-        int steps = Mathf.Max(Mathf.Abs(endCell.x - startCell.x), Mathf.Abs(endCell.y - startCell.y));
-        for (int step = 0; step <= steps; step++)
-        {
-            float t = steps == 0 ? 0f : step / (float)steps;
-            centerX = Mathf.RoundToInt(Mathf.Lerp(startCell.x, endCell.x, t));
-            centerY = Mathf.RoundToInt(Mathf.Lerp(startCell.y, endCell.y, t));
-            for (int offsetY = -tileBrushRadius; offsetY <= tileBrushRadius; offsetY++)
-            {
-                for (int offsetX = -tileBrushRadius; offsetX <= tileBrushRadius; offsetX++)
-                {
-                    if (offsetX * offsetX + offsetY * offsetY > tileBrushRadius * tileBrushRadius)
-                        continue;
-
-                    int x = centerX + offsetX;
-                    int y = centerY + offsetY;
-                    if (x < 0 || x >= gridSize || y < 0 || y >= gridSize)
-                        continue;
-                    level.sandGrid[y * gridSize + x] = colorId;
-                }
-            }
-
-        }
-        previousPaintCell = endCell;
-        TilesChanged(level);
-        currentEvent.Use();
-        Repaint();
-    }
-
-    private void TilesChanged(SandPictureData level)
-    {
-        level.sandSourceMode = SandSourceMode.Tiles;
-        level.sandPatternResourcePath = "";
-        level.sourceImagePath = "";
-        RegeneratePreview();
-        dirty = true;
     }
 
     private static List<SerializableColor> CreateDefaultTilePalette()

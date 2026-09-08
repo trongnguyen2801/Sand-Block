@@ -41,7 +41,10 @@ namespace SandFlowPuzzle.BlockAuthoring
                         colorId = block.colorId,
                         occupiedCells = block.occupiedCells == null
                             ? null
-                            : new List<LevelCellCoord>(block.occupiedCells)
+                            : new List<LevelCellCoord>(block.occupiedCells),
+                        colorQuotas = block.colorQuotas == null
+                            ? null
+                            : new List<BlockColorQuota>(block.colorQuotas)
                     });
                 }
             }

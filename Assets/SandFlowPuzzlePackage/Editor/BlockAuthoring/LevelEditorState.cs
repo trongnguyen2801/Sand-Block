@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace SandFlowPuzzle.BlockAuthoring.EditorTools
@@ -12,7 +13,8 @@ namespace SandFlowPuzzle.BlockAuthoring.EditorTools
     {
         View,
         Edit,
-        Add
+        Add,
+        SelectCells
     }
 
     /// <summary>
@@ -48,6 +50,17 @@ namespace SandFlowPuzzle.BlockAuthoring.EditorTools
 
         public AddBlockDraft AddDraft = new AddBlockDraft();
 
+        // ── Cell selection (Select Cells mode) ──────────────────────────────
+        /// <summary>Cells currently selected for sand painting.</summary>
+        public readonly List<Vector2Int> SelectedCells = new List<Vector2Int>();
+
+        /// <summary>True while the user is drag-selecting cells.</summary>
+        public bool IsSelectingCells;
+
+        /// <summary>Selection paint button (0 = add, 1 = remove).</summary>
+        public int SelectCellsButton = -1;
+
+        // ── Edit Grid paint stroke ──────────────────────────────────────────
         /// <summary>Mouse button that owns the active Edit Grid paint stroke, or -1 when inactive.</summary>
         public int GridPaintButton = -1;
 
@@ -79,6 +92,7 @@ namespace SandFlowPuzzle.BlockAuthoring.EditorTools
                 SelectedBlockIndex = -1;
                 CancelTransientInteraction();
                 AddDraft.Clear();
+                ClearCellSelection();
             }
 
             MainMode = mode;
@@ -99,6 +113,11 @@ namespace SandFlowPuzzle.BlockAuthoring.EditorTools
                 CancelDrag();
             }
 
+            if (BlockMode == LevelEditorBlockMode.SelectCells && mode != LevelEditorBlockMode.SelectCells)
+            {
+                EndCellSelect();
+            }
+
             BlockMode = mode;
         }
 
@@ -115,6 +134,7 @@ namespace SandFlowPuzzle.BlockAuthoring.EditorTools
             EndGridPaint();
             CancelDrag();
             AddDraft.Clear();
+            ClearCellSelection();
         }
 
         /// <summary>
@@ -176,6 +196,71 @@ namespace SandFlowPuzzle.BlockAuthoring.EditorTools
             DragOriginalAnchor = default;
             DragCandidateAnchor = default;
             DragCandidateValid = false;
+        }
+
+        // ── Cell Selection helpers ──────────────────────────────────────────
+
+        public void ClearCellSelection()
+        {
+            SelectedCells.Clear();
+            IsSelectingCells = false;
+            SelectCellsButton = -1;
+        }
+
+        public void BeginCellSelect(int button)
+        {
+            IsSelectingCells = true;
+            SelectCellsButton = button;
+        }
+
+        public void EndCellSelect()
+        {
+            IsSelectingCells = false;
+            SelectCellsButton = -1;
+        }
+
+        public void ToggleCell(Vector2Int cell)
+        {
+            int idx = SelectedCells.IndexOf(cell);
+            if (idx >= 0) SelectedCells.RemoveAt(idx);
+            else SelectedCells.Add(cell);
+        }
+
+        public void AddCell(Vector2Int cell)
+        {
+            if (!SelectedCells.Contains(cell))
+                SelectedCells.Add(cell);
+        }
+
+        public void RemoveCell(Vector2Int cell)
+        {
+            SelectedCells.RemoveAll(c => c.x == cell.x && c.y == cell.y);
+        }
+
+        /// <summary>Returns the bounding rectangle of the selected cells, or null if empty.</summary>
+        public bool GetSelectionBounds(out RectInt bounds)
+        {
+            if (SelectedCells.Count == 0)
+            {
+                bounds = default;
+                return false;
+            }
+            int minX = int.MaxValue, minY = int.MaxValue;
+            int maxX = int.MinValue, maxY = int.MinValue;
+            foreach (var c in SelectedCells)
+            {
+                if (c.x < minX) minX = c.x;
+                if (c.y < minY) minY = c.y;
+                if (c.x > maxX) maxX = c.x;
+                if (c.y > maxY) maxY = c.y;
+            }
+            bounds = new RectInt(minX, minY, maxX - minX + 1, maxY - minY + 1);
+            return true;
+        }
+
+        public bool IsCellSelected(Vector2Int cell)
+        {
+            return SelectedCells.Contains(cell);
         }
     }
 }

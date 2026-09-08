@@ -79,6 +79,7 @@ namespace SandFlowPuzzle
 
         private IReadOnlyList<SandPictureRuntime> pictures;
         private readonly Dictionary<int, int> totalColorCounts = new Dictionary<int, int>();
+        private readonly List<int> blockColorList = new List<int>();
         public bool HasFlyingGrains => flyingGrains.Count > 0;
         private BlockXLevelFile authoredBoard;
         private readonly HashSet<Collider> boardObstacles = new HashSet<Collider>();
@@ -108,11 +109,15 @@ namespace SandFlowPuzzle
         public void Initialize(IReadOnlyList<SandPictureRuntime> sandPictures, LevelData levelData, Vector3 sandMin, Vector3 sandMax)
         {
             pictures = sandPictures;
+            blockColorList.Clear();
             totalColorCounts.Clear();
             foreach (SandPictureRuntime picture in pictures)
                 foreach (var entry in picture.simulator.colorCounts)
+                {
+                    if (!blockColorList.Contains(entry.Key)) blockColorList.Add(entry.Key);
                     totalColorCounts[entry.Key] = totalColorCounts.TryGetValue(entry.Key, out int count)
                         ? count + entry.Value : entry.Value;
+                }
             sandWorldMin = Vector3.Min(sandMin, sandMax);
             sandWorldMax = Vector3.Max(sandMin, sandMax);
             mainCamera = Camera.main;
@@ -153,7 +158,6 @@ namespace SandFlowPuzzle
             var perColor = new Dictionary<int, int>();
             foreach (var item in authoredBoard.blocks)
                 perColor[item.colorId] = perColor.TryGetValue(item.colorId, out int n) ? n + 1 : 1;
-            var created = new Dictionary<int, int>();
             for (int i = 0; i < authoredBoard.blocks.Count; i++)
             {
                 var item = authoredBoard.blocks[i];
@@ -166,18 +170,27 @@ namespace SandFlowPuzzle
                     minX = Mathf.Min(minX, cell.x); maxX = Mathf.Max(maxX, cell.x);
                     minY = Mathf.Min(minY, cell.y); maxY = Mathf.Max(maxY, cell.y);
                 }
-                int count = perColor[item.colorId];
-                int ordinal = created.TryGetValue(item.colorId, out int used) ? used : 0;
-                created[item.colorId] = ordinal + 1;
-                int total = totalColorCounts[item.colorId];
-                int quota = total / count + (ordinal < total % count ? 1 : 0);
+
+                // Determine quotas for this block (manual per-color or legacy auto-split).
+                Dictionary<int, int> quotas = CollectorBoardUtility.ResolveBlockQuotas(authoredBoard, i, totalColorCounts);
+                if (quotas.Count == 0)
+                {
+                    int count = perColor[item.colorId];
+                    int total = totalColorCounts[item.colorId];
+                    int ordinal = 0;
+                    for (int k = 0; k < i; k++)
+                        if (authoredBoard.blocks[k] != null && authoredBoard.blocks[k].colorId == item.colorId) ordinal++;
+                    int quota = total / count + (ordinal < total % count ? 1 : 0);
+                    quotas[item.colorId] = quota;
+                }
+
                 // HoleGenerator centers its mesh on the shape bounds; translate that center
                 // to the authored cells, retaining BlockX's bottom-left coordinate convention.
                 Vector3 center = new Vector3(
                     placementGridMinX + (minX + maxX + 1) * 0.5f * blockCellSize,
                     transform.position.y,
                     placementGridMinZ + (minY + maxY + 1) * 0.5f * blockCellSize);
-                CreateCollectorBlock(i, item.colorId, quota, shape, center);
+                CreateCollectorBlock(i, item.colorId, quotas, shape, center);
             }
         }
 
@@ -244,7 +257,7 @@ namespace SandFlowPuzzle
                 CreateCollectorBlock(
                     i,
                     colorId,
-                    quota,
+                    new Dictionary<int, int> { { colorId, quota } },
                     DogJamShapes[i % DogJamShapes.Length],
                     new Vector3(worldX, worldY, worldZ));
             }
@@ -283,7 +296,7 @@ namespace SandFlowPuzzle
             return result;
         }
 
-        private void CreateCollectorBlock(int index, int colorId, int quota, Vector2Int[] shape, Vector3 position)
+        private void CreateCollectorBlock(int index, int colorId, Dictionary<int, int> colorQuotas, Vector2Int[] shape, Vector3 position)
         {
             GameObject root = new GameObject($"SandCollectorBlock_{index + 1}_Color_{colorId}");
             root.transform.SetParent(transform, true);
@@ -300,6 +313,9 @@ namespace SandFlowPuzzle
                 minY = Mathf.Min(minY, shape[i].y);
                 maxY = Mathf.Max(maxY, shape[i].y);
             }
+
+            int quota = 0;
+            foreach (var kv in colorQuotas) quota += kv.Value;
 
             HoleDefinition hole = root.AddComponent<HoleDefinition>();
             hole.InitializeGrid(maxX - minX + 1, maxY - minY + 1);
@@ -336,7 +352,7 @@ namespace SandFlowPuzzle
             }
 
             SandCollectorBlock block = root.AddComponent<SandCollectorBlock>();
-            block.Initialize(this, colorId, quota, colliders, counter);
+            block.Initialize(this, colorQuotas, colliders, counter);
             root.transform.position = ClampToPlayArea(
                 block,
                 SnapToPlacementGrid(block, root.transform.position));
@@ -724,25 +740,42 @@ namespace SandFlowPuzzle
                 if (!block.TryGetBounds(out Bounds blockBounds)) continue;
                 int budget = Mathf.Min(grainsPerSuction, block.Remaining);
                 int totalExtracted = 0;
-                foreach (SandPictureRuntime picture in pictures)
+
+                // Determine which colors this block still needs and can collect.
+                var pendingColors = new List<int>();
+                if (block.IsMultiColor)
+                {
+                    foreach (int c in blockColorList)
+                        if (block.RemainingForColor(c) > 0) pendingColors.Add(c);
+                }
+                else
+                {
+                    if (block.Remaining > 0) pendingColors.Add(block.ColorId);
+                }
+
+                foreach (int targetColor in pendingColors)
                 {
                     if (budget <= 0 || block.IsCompleting) break;
-                    extractedPositions.Clear();
-                    int extracted;
-                    if (authoredBoard != null && authoredBoard.sandInBoard)
-                        extracted = ExtractAtRegionContacts(block, picture, budget);
-                    else
+                    foreach (SandPictureRuntime picture in pictures)
                     {
-                        if (!BuildContactColumnMask(block, contactGridColumns, picture)) continue;
-                        int centerGridX = WorldXToGridX(blockBounds.center.x, picture);
-                        extracted = picture.simulator.ExtractExposedPixelsInColumns(
-                            centerGridX, (byte)block.ColorId, budget, extractedPositions, contactGridColumns);
+                        if (budget <= 0 || block.IsCompleting) break;
+                        extractedPositions.Clear();
+                        int extracted;
+                        if (authoredBoard != null && authoredBoard.sandInBoard)
+                            extracted = ExtractAtRegionContacts(block, picture, budget, (byte)targetColor);
+                        else
+                        {
+                            if (!BuildContactColumnMask(block, contactGridColumns, picture)) continue;
+                            int centerGridX = WorldXToGridX(blockBounds.center.x, picture);
+                            extracted = picture.simulator.ExtractExposedPixelsInColumns(
+                                centerGridX, (byte)targetColor, budget, extractedPositions, contactGridColumns);
+                        }
+                        if (extracted == 0) continue;
+                        SpawnFlyingGrains(block, extractedPositions, picture);
+                        block.Absorb(extracted, targetColor);
+                        budget -= extracted;
+                        totalExtracted += extracted;
                     }
-                    if (extracted == 0) continue;
-                    SpawnFlyingGrains(block, extractedPositions, picture);
-                    block.Absorb(extracted);
-                    budget -= extracted;
-                    totalExtracted += extracted;
                 }
                 suctionCooldowns[block] = suctionInterval;
                 if (totalExtracted > 0 && HypercasualGameEngine.SoundManager.Instance != null)
@@ -750,7 +783,7 @@ namespace SandFlowPuzzle
             }
         }
 
-        private int ExtractAtRegionContacts(SandCollectorBlock block, SandPictureRuntime picture, int budget)
+        private int ExtractAtRegionContacts(SandCollectorBlock block, SandPictureRuntime picture, int budget, byte targetColor)
         {
             if (picture.mask == null) return 0;
             int n = SandSimulator.GRID_SIZE;
@@ -787,7 +820,7 @@ namespace SandFlowPuzzle
                         if (contact) break;
                     }
                     if (contact) count += picture.simulator.ExtractFromEdge(x, y, -dx, -dy,
-                        (byte)block.ColorId, budget - count, extractedPositions);
+                        targetColor, budget - count, extractedPositions);
                 }
             }
             return count;
