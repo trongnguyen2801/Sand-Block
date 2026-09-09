@@ -11,7 +11,7 @@ namespace SandFlowPuzzle
         {
             base.OnPopulateMesh(vh);
             const float paddingCells = 0.5f;
-            float scale = 1f + 2f * paddingCells / SandSimulator.GRID_SIZE;
+            float scale = 1f + 2f * paddingCells / (texture != null ? texture.width : SandSimulator.GRID_SIZE);
             Vector2 center = GetPixelAdjustedRect().center;
             Vector2 uvCenter = uvRect.center;
             UIVertex vertex = default(UIVertex);
@@ -46,6 +46,7 @@ namespace SandFlowPuzzle
     public class SandSimulator : MonoBehaviour
     {
         public const int GRID_SIZE = 35;
+        public int GridSize { get; private set; } = GRID_SIZE;
         public const int SUB_STEPS = 3;
 
         // Color IDs
@@ -102,18 +103,19 @@ namespace SandFlowPuzzle
         private Material circularGrainMaterial;
         private RawImage rawImage;
 
-        public void Initialize(RawImage displayImage)
+        public void Initialize(RawImage displayImage, int runtimeSize = GRID_SIZE)
         {
+            GridSize = Mathf.Max(1, runtimeSize);
             rawImage = displayImage;
 
             // Reset palette to defaults
             Palette = (Color32[])DefaultPalette.Clone();
             PaletteColors = (Color[])DefaultPaletteColors.Clone();
 
-            grid = new byte[GRID_SIZE * GRID_SIZE];
-            noiseGrid = new int[GRID_SIZE * GRID_SIZE];
-            pixelBuffer = new Color32[GRID_SIZE * GRID_SIZE];
-            flippedPixelBuffer = new Color32[GRID_SIZE * GRID_SIZE];
+            grid = new byte[GridSize * GridSize];
+            noiseGrid = new int[GridSize * GridSize];
+            pixelBuffer = new Color32[GridSize * GridSize];
+            flippedPixelBuffer = new Color32[GridSize * GridSize];
 
             // Generate noise
             for (int i = 0; i < noiseGrid.Length; i++)
@@ -129,14 +131,15 @@ namespace SandFlowPuzzle
         /// Initialize with pre-built grid data and palette from LevelData.
         /// Falls back to GenerateLighthouseImage() if gridData is null/empty.
         /// </summary>
-        public void Initialize(RawImage displayImage, List<byte> gridData, List<SerializableColor> palette)
+        public void Initialize(RawImage displayImage, List<byte> gridData, List<SerializableColor> palette, int runtimeSize = GRID_SIZE)
         {
+            GridSize = Mathf.Max(1, runtimeSize);
             rawImage = displayImage;
 
-            grid = new byte[GRID_SIZE * GRID_SIZE];
-            noiseGrid = new int[GRID_SIZE * GRID_SIZE];
-            pixelBuffer = new Color32[GRID_SIZE * GRID_SIZE];
-            flippedPixelBuffer = new Color32[GRID_SIZE * GRID_SIZE];
+            grid = new byte[GridSize * GridSize];
+            noiseGrid = new int[GridSize * GridSize];
+            pixelBuffer = new Color32[GridSize * GridSize];
+            flippedPixelBuffer = new Color32[GridSize * GridSize];
 
             for (int i = 0; i < noiseGrid.Length; i++)
                 noiseGrid[i] = Random.Range(-8, 8);
@@ -167,20 +170,19 @@ namespace SandFlowPuzzle
                     PaletteColors[i + 1] = new Color(sc.r, sc.g, sc.b, 1f);
                 }
 
-                // Resample old level data (for example 80x80) into the runtime
-                // 70x70 grid. This guarantees a maximum of 4,900 sand grains.
-                for (int y = 0; y < GRID_SIZE; y++)
+                // Authored board pictures retain 11 pixels per cell; legacy callers use the default size.
+                for (int y = 0; y < GridSize; y++)
                 {
                     int sourceY = Mathf.Min(
-                        Mathf.FloorToInt((y + 0.5f) * sourceGridSize / GRID_SIZE),
+                        Mathf.FloorToInt((y + 0.5f) * sourceGridSize / GridSize),
                         sourceGridSize - 1);
 
-                    for (int x = 0; x < GRID_SIZE; x++)
+                    for (int x = 0; x < GridSize; x++)
                     {
                         int sourceX = Mathf.Min(
-                            Mathf.FloorToInt((x + 0.5f) * sourceGridSize / GRID_SIZE),
+                            Mathf.FloorToInt((x + 0.5f) * sourceGridSize / GridSize),
                             sourceGridSize - 1);
-                        grid[y * GRID_SIZE + x] = gridData[sourceY * sourceGridSize + sourceX];
+                        grid[y * GridSize + x] = gridData[sourceY * sourceGridSize + sourceX];
                     }
                 }
 
@@ -208,13 +210,13 @@ namespace SandFlowPuzzle
             foreach (int count in colorCounts.Values)
                 particleCount += count;
             Debug.Log(
-                $"[SandFlowPuzzle] Runtime sand: {GRID_SIZE}x{GRID_SIZE} = {grid.Length} cells, " +
+                $"[SandFlowPuzzle] Runtime sand: {GridSize}x{GridSize} = {grid.Length} cells, " +
                 $"{particleCount} particles (source: {sourceGridSize}x{sourceGridSize}).");
         }
 
         private void CreateDisplayTexture()
         {
-            texture = new Texture2D(GRID_SIZE, GRID_SIZE, TextureFormat.RGBA32, false);
+            texture = new Texture2D(GridSize, GridSize, TextureFormat.RGBA32, false);
             texture.filterMode = FilterMode.Point;
             texture.wrapMode = TextureWrapMode.Clamp;
             rawImage.texture = texture;
@@ -233,7 +235,7 @@ namespace SandFlowPuzzle
             {
                 name = "SandCircularGrains (Runtime)"
             };
-            circularGrainMaterial.SetFloat("_GridSize", GRID_SIZE);
+            circularGrainMaterial.SetFloat("_GridSize", GridSize);
             circularGrainMaterial.SetColor("_BackgroundColor", Palette[0]);
             rawImage.material = circularGrainMaterial;
         }
@@ -244,12 +246,12 @@ namespace SandFlowPuzzle
             colorCounts.Clear();
             for (int c = 1; c <= 4; c++) colorCounts[c] = 0;
 
-            for (int y = 0; y < GRID_SIZE; y++)
+            for (int y = 0; y < GridSize; y++)
             {
-                int designY = Mathf.FloorToInt(y * designSize / (float)GRID_SIZE);
-                for (int x = 0; x < GRID_SIZE; x++)
+                int designY = Mathf.FloorToInt(y * designSize / (float)GridSize);
+                for (int x = 0; x < GridSize; x++)
                 {
-                    int designX = Mathf.FloorToInt(x * designSize / (float)GRID_SIZE);
+                    int designX = Mathf.FloorToInt(x * designSize / (float)GridSize);
                     byte color = BLUE; // default sky
 
                     if (designY >= 65)
@@ -295,7 +297,7 @@ namespace SandFlowPuzzle
                         }
                     }
 
-                    grid[y * GRID_SIZE + x] = color;
+                    grid[y * GridSize + x] = color;
                     colorCounts[color]++;
                 }
             }
@@ -303,18 +305,20 @@ namespace SandFlowPuzzle
 
         public void SetShapeMask(bool[] mask)
         {
+            if (mask != null && mask.Length != grid.Length)
+                throw new System.ArgumentException("Shape mask must match the simulator grid.");
             shapeMask = mask;
             if (mask == null) return;
             var pixels = new Color32[grid.Length];
             colorCounts.Clear();
-            for (int y = 0; y < GRID_SIZE; y++) for (int x = 0; x < GRID_SIZE; x++)
+            for (int y = 0; y < GridSize; y++) for (int x = 0; x < GridSize; x++)
             {
-                int i = y * GRID_SIZE + x;
+                int i = y * GridSize + x;
                 if (!mask[i]) grid[i] = EMPTY;
                 if (grid[i] != EMPTY) colorCounts[grid[i]] = colorCounts.TryGetValue(grid[i], out int count) ? count + 1 : 1;
-                pixels[(GRID_SIZE - 1 - y) * GRID_SIZE + x] = mask[i] ? new Color32(255,255,255,255) : new Color32(0,0,0,0);
+                pixels[(GridSize - 1 - y) * GridSize + x] = mask[i] ? new Color32(255,255,255,255) : new Color32(0,0,0,0);
             }
-            shapeTexture = new Texture2D(GRID_SIZE, GRID_SIZE, TextureFormat.RGBA32, false);
+            shapeTexture = new Texture2D(GridSize, GridSize, TextureFormat.RGBA32, false);
             shapeTexture.filterMode = FilterMode.Point;
             shapeTexture.wrapMode = TextureWrapMode.Clamp;
             shapeTexture.SetPixels32(pixels);
@@ -322,31 +326,32 @@ namespace SandFlowPuzzle
             if (circularGrainMaterial != null) circularGrainMaterial.SetTexture("_ShapeTex", shapeTexture);
         }
 
-        // Start at each contacted footprint edge and scan inward through empty sand.
-        // Stop at the first grain (another color blocks suction) or at a shape boundary.
-        public int ExtractFromEdge(int x, int y, int dx, int dy, byte colorId, int budget, List<Vector2Int> extracted)
+        // Start at each contacted footprint edge and scan inward by at most maxDepth pixels.
+        // Empty pixels consume depth; another color or a shape boundary stops suction.
+        public int ExtractFromEdge(int x, int y, int dx, int dy, byte colorId,
+            int maxDepth, int budget, List<Vector2Int> extracted)
         {
             return SandFlowPuzzle.BlockAuthoring.SandBoardUtility.ExtractFromEdge(
-                grid, shapeMask, x, y, dx, dy, colorId, budget, extracted);
+                grid, shapeMask, x, y, dx, dy, colorId, maxDepth, budget, extracted);
         }
 
         public void SimulateGravity()
         {
             for (int step = 0; step < SUB_STEPS; step++)
             {
-                for (int y = GRID_SIZE - 2; y >= 0; y--)
+                for (int y = GridSize - 2; y >= 0; y--)
                 {
                     int dir = Random.value < 0.5f ? 1 : -1;
-                    int startX = dir == 1 ? 0 : GRID_SIZE - 1;
-                    int endX = dir == 1 ? GRID_SIZE : -1;
+                    int startX = dir == 1 ? 0 : GridSize - 1;
+                    int endX = dir == 1 ? GridSize : -1;
 
                     for (int x = startX; x != endX; x += dir)
                     {
-                        int idx = y * GRID_SIZE + x;
+                        int idx = y * GridSize + x;
                         byte p = grid[idx];
                         if (p == 0) continue;
 
-                        int idxDown = (y + 1) * GRID_SIZE + x;
+                        int idxDown = (y + 1) * GridSize + x;
                         if (grid[idxDown] == 0 && (shapeMask == null || shapeMask[idxDown]))
                         {
                             grid[idxDown] = p;
@@ -355,7 +360,7 @@ namespace SandFlowPuzzle
                         else
                         {
                             bool fallLeft = x > 0 && grid[idxDown - 1] == 0 && (shapeMask == null || shapeMask[idxDown - 1]);
-                            bool fallRight = x < GRID_SIZE - 1 && grid[idxDown + 1] == 0 && (shapeMask == null || shapeMask[idxDown + 1]);
+                            bool fallRight = x < GridSize - 1 && grid[idxDown + 1] == 0 && (shapeMask == null || shapeMask[idxDown + 1]);
 
                             if (fallLeft && fallRight)
                             {
@@ -381,15 +386,15 @@ namespace SandFlowPuzzle
         {
             int extracted = 0;
 
-            int minY = GRID_SIZE - 4; // only extract from bottom 4 rows
-            for (int y = GRID_SIZE - 1; y >= minY && extracted < maxCount; y--)
+            int minY = Mathf.Max(0, GridSize - 4); // only extract from bottom 4 rows
+            for (int y = GridSize - 1; y >= minY && extracted < maxCount; y--)
             {
                 for (int dx = -8; dx <= 8 && extracted < maxCount; dx++)
                 {
                     int x = centerGridX + dx;
-                    if (x < 0 || x >= GRID_SIZE) continue;
+                    if (x < 0 || x >= GridSize) continue;
 
-                    int idx = y * GRID_SIZE + x;
+                    int idx = y * GridSize + x;
                     if (grid[idx] != colorId) continue;
 
                     grid[idx] = 0;
@@ -427,15 +432,15 @@ namespace SandFlowPuzzle
             List<Vector2Int> extractedPositions,
             bool[] allowedColumns)
         {
-            if (maxCount <= 0 || allowedColumns == null || allowedColumns.Length < GRID_SIZE)
+            if (maxCount <= 0 || allowedColumns == null || allowedColumns.Length < GridSize)
                 return 0;
 
             int extracted = 0;
-            int minY = GRID_SIZE - 4;
+            int minY = Mathf.Max(0, GridSize - 4);
 
-            for (int y = GRID_SIZE - 1; y >= minY && extracted < maxCount; y--)
+            for (int y = GridSize - 1; y >= minY && extracted < maxCount; y--)
             {
-                for (int distance = 0; distance < GRID_SIZE && extracted < maxCount; distance++)
+                for (int distance = 0; distance < GridSize && extracted < maxCount; distance++)
                 {
                     int leftX = centerGridX - distance;
                     if (TryExtractPixel(leftX, y, colorId, centerGridX, extractedPositions, allowedColumns))
@@ -460,9 +465,9 @@ namespace SandFlowPuzzle
             List<Vector2Int> extractedPositions,
             bool[] allowedColumns)
         {
-            if (x < 0 || x >= GRID_SIZE || !allowedColumns[x]) return false;
+            if (x < 0 || x >= GridSize || !allowedColumns[x]) return false;
 
-            int index = y * GRID_SIZE + x;
+            int index = y * GridSize + x;
             if (grid[index] != colorId) return false;
 
             grid[index] = EMPTY;
@@ -473,7 +478,7 @@ namespace SandFlowPuzzle
                 x = x,
                 y = y,
                 tx = targetGridX,
-                ty = GRID_SIZE + 5,
+                ty = GridSize + 5,
                 vx = (targetGridX - x) * 0.05f + (Random.value - 0.5f) * 2f,
                 vy = -Random.value * 2f - 1f,
                 colorId = colorId
@@ -515,7 +520,7 @@ namespace SandFlowPuzzle
 
             // Alpha stores occupancy for the circular-grain shader:
             // 0 = empty cell, 255 = visible grain.
-            for (int i = 0; i < GRID_SIZE * GRID_SIZE; i++)
+            for (int i = 0; i < GridSize * GridSize; i++)
             {
                 byte colorId = grid[i];
                 bool occupied = colorId != EMPTY && colorId < paletteLen;
@@ -530,9 +535,9 @@ namespace SandFlowPuzzle
                 FlyingParticle p = particles[i];
                 int px = Mathf.FloorToInt(p.x);
                 int py = Mathf.FloorToInt(p.y);
-                if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE)
+                if (px >= 0 && px < GridSize && py >= 0 && py < GridSize)
                 {
-                    int gridIndex = py * GRID_SIZE + px;
+                    int gridIndex = py * GridSize + px;
                     Color32 rgb = p.colorId < paletteLen ? Palette[p.colorId] : Palette[0];
                     pixelBuffer[gridIndex] = ApplyNoise(rgb, noiseGrid[gridIndex], 255);
                 }
@@ -540,14 +545,14 @@ namespace SandFlowPuzzle
 
             // Unity texture Y is flipped (0 = bottom), but our grid Y=0 = top
             // We need to flip vertically when writing to texture
-            for (int y = 0; y < GRID_SIZE; y++)
+            for (int y = 0; y < GridSize; y++)
             {
                 System.Array.Copy(
                     pixelBuffer,
-                    y * GRID_SIZE,
+                    y * GridSize,
                     flippedPixelBuffer,
-                    (GRID_SIZE - 1 - y) * GRID_SIZE,
-                    GRID_SIZE);
+                    (GridSize - 1 - y) * GridSize,
+                    GridSize);
             }
 
             texture.SetPixels32(flippedPixelBuffer);

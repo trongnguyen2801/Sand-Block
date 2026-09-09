@@ -76,6 +76,11 @@ namespace SandFlowPuzzle
                 int size = UnityEngine.Mathf.RoundToInt(UnityEngine.Mathf.Sqrt(picture.sandGrid.Count));
                 if (size == 0 || size * size != picture.sandGrid.Count)
                     picture.sandGrid = new List<byte>(new byte[SandSimulator.GRID_SIZE * SandSimulator.GRID_SIZE]);
+                var region = useAuthoredCollectorBoard && collectorBoard != null && collectorBoard.sandInBoard
+                    ? SandFlowPuzzle.BlockAuthoring.SandBoardUtility.FindRegion(collectorBoard, result.Count) : null;
+                int runtimeSize = region != null && region.occupiedCells.Count > 0
+                    ? SandFlowPuzzle.BlockAuthoring.SandBoardUtility.GridSize(region) : SandSimulator.GRID_SIZE;
+                SandFlowPuzzle.BlockAuthoring.SandBoardUtility.ResizePicture(picture, runtimeSize);
                 result.Add(picture);
             }
             if (sharedPalette.Count == 0) sharedPalette.Add(new SerializableColor(1f, 1f, 1f));

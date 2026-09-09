@@ -5,6 +5,32 @@ namespace SandFlowPuzzle.BlockAuthoring
 {
     public static class SandBoardUtility
     {
+        public const int PixelsPerCell = 11;
+
+        public static int GridSize(SandRegionFile region)
+        {
+            RectInt bounds = Bounds(region);
+            return Mathf.Max(bounds.width, bounds.height) * PixelsPerCell;
+        }
+
+        // Preserve existing artwork when upgrading older fixed-resolution pictures.
+        public static void ResizePicture(SandPictureData picture, int size)
+        {
+            int oldSize = picture.sandGrid == null ? 0 : (int)System.Math.Sqrt(picture.sandGrid.Count);
+            if (picture.gridSize == size && oldSize == size && picture.sandGrid.Count == size * size) return;
+            var pixels = new List<byte>(new byte[size * size]);
+            if (oldSize > 0 && oldSize * oldSize == picture.sandGrid.Count)
+                for (int y = 0; y < size; y++)
+                    for (int x = 0; x < size; x++)
+                    {
+                        int sx = System.Math.Min((int)((x + .5) * oldSize / size), oldSize - 1);
+                        int sy = System.Math.Min((int)((y + .5) * oldSize / size), oldSize - 1);
+                        pixels[y * size + x] = picture.sandGrid[sy * oldSize + sx];
+                    }
+            picture.gridSize = size;
+            picture.sandGrid = pixels;
+        }
+
         public static void EnsureUnified(LevelData level)
         {
             if (!level.useAuthoredCollectorBoard || level.collectorBoard == null
@@ -18,13 +44,17 @@ namespace SandFlowPuzzle.BlockAuthoring
         }
 
         public static int ExtractFromEdge(byte[] grid, bool[] shapeMask, int x, int y,
-            int dx, int dy, byte colorId, int budget, List<Vector2Int> extracted)
+            int dx, int dy, byte colorId, int maxDepth, int budget, List<Vector2Int> extracted)
         {
-            if (Mathf.Abs(dx) + Mathf.Abs(dy) != 1 || colorId == 0 || budget <= 0) return 0;
+            if (Mathf.Abs(dx) + Mathf.Abs(dy) != 1 || colorId == 0 || maxDepth <= 0 || budget <= 0) return 0;
+            int size = (int)System.Math.Sqrt(grid.Length);
+            if (size * size != grid.Length || (shapeMask != null && shapeMask.Length != grid.Length))
+                throw new System.ArgumentException("Sand grid and mask dimensions must agree.");
             int count = 0;
-            while (x >= 0 && y >= 0 && x < SandSimulator.GRID_SIZE && y < SandSimulator.GRID_SIZE && count < budget)
+            int depth = 0;
+            while (x >= 0 && y >= 0 && x < size && y < size && depth < maxDepth && count < budget)
             {
-                int index = y * SandSimulator.GRID_SIZE + x;
+                int index = y * size + x;
                 if (shapeMask != null && !shapeMask[index]) break;
                 byte grain = grid[index];
                 if (grain != 0)
@@ -36,6 +66,7 @@ namespace SandFlowPuzzle.BlockAuthoring
                 }
                 x += dx;
                 y += dy;
+                depth++;
             }
             return count;
         }
@@ -55,12 +86,12 @@ namespace SandFlowPuzzle.BlockAuthoring
             int side = Mathf.Max(bounds.width, bounds.height);
             var cells = new HashSet<Vector2Int>();
             foreach (var c in region.occupiedCells) cells.Add(new Vector2Int(c.x, c.y));
-            int n = SandSimulator.GRID_SIZE;
+            int n = side * PixelsPerCell;
             var mask = new bool[n * n];
             for (int y = 0; y < n; y++) for (int x = 0; x < n; x++)
                 mask[y * n + x] = cells.Contains(new Vector2Int(
-                    bounds.x + Mathf.FloorToInt((x + 0.5f) * side / n),
-                    bounds.y + side - 1 - Mathf.FloorToInt((y + 0.5f) * side / n)));
+                    bounds.x + x / PixelsPerCell,
+                    bounds.y + side - 1 - y / PixelsPerCell));
             return mask;
         }
 

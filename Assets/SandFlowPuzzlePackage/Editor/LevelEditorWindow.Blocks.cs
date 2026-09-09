@@ -73,6 +73,7 @@ namespace SandFlowPuzzle
             int mode = GUILayout.Toolbar(blockMode, new[] { "Edit Grid", "Select Cells", "Edit Block", "Add Block" });
             if (mode != blockMode)
             {
+                EndTilePaintStroke();
                 blockState.ResetForDocumentChange();
                 blockMode = mode;
                 blockState.SetMainMode(mode == 0 ? LevelEditorMainMode.EditGrid : LevelEditorMainMode.Block);
@@ -162,6 +163,7 @@ namespace SandFlowPuzzle
 
         private void HandleCellSelectionInput(LevelGridViewport viewport)
         {
+            if (tilePaintControl != 0) return;
             Event e = Event.current;
             if (e.type == EventType.Used) return;
 
@@ -217,12 +219,38 @@ namespace SandFlowPuzzle
         private void DrawCellSelectionInspector(LevelData level)
         {
             EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField($"Selected: {blockState.SelectedCells.Count} cell(s)", EditorStyles.boldLabel);
+            int count = level.sandPictures != null && level.sandPictures.Count > 0 ? level.sandPictures.Count : 1;
+            string[] options = new string[count];
+            for (int i = 0; i < count; i++) options[i] = $"Picture {i + 1}";
+            int next = EditorGUILayout.Popup("Target picture", Mathf.Clamp(selectedPictureIndex, 0, count - 1), options);
+            if (next != selectedPictureIndex)
+            {
+                EndTilePaintStroke();
+                selectedPictureIndex = next;
+                PrepareSelectedTiles();
+                RegeneratePreview();
+            }
+
+            EditorGUILayout.BeginHorizontal();
+            using (new EditorGUI.DisabledScope(SandBoardUtility.FindRegion(blockDocument.Data, selectedPictureIndex) == null))
+                if (GUILayout.Button("Load placed cells"))
+                {
+                    EndTilePaintStroke();
+                    var region = SandBoardUtility.FindRegion(blockDocument.Data, selectedPictureIndex);
+                    blockState.ClearCellSelection();
+                    foreach (var c in region.occupiedCells) blockState.AddCell(new Vector2Int(c.x, c.y));
+                    tileCanvas = null;
+                }
+            using (new EditorGUI.DisabledScope(blockState.SelectedCells.Count == 0))
+                if (GUILayout.Button("Deselect all"))
+                {
+                    EndTilePaintStroke();
+                    blockState.ClearCellSelection();
+                }
+            EditorGUILayout.EndHorizontal();
 
             if (blockState.SelectedCells.Count > 0 && blockState.GetSelectionBounds(out RectInt bounds))
             {
-                EditorGUILayout.LabelField($"Region: {bounds.width} x {bounds.height} cells", EditorStyles.miniLabel);
-
                 // Show the selected cells painter
                 DrawSelectedCellsPainter(level, bounds);
             }

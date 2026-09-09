@@ -527,8 +527,9 @@ namespace SandFlowPuzzle
             {
                 SandSimulator simulator = sandPictures[i].simulator;
                 RawImage image = simulator.GetComponent<RawImage>();
-                if (pictures != null) simulator.Initialize(image, pictures[i].sandGrid, pictures[i].palette);
-                else simulator.Initialize(image);
+                if (pictures != null) simulator.Initialize(image, pictures[i].sandGrid, pictures[i].palette, pictures[i].gridSize);
+                else simulator.Initialize(image, sandPictures[i].mask != null
+                    ? Mathf.RoundToInt(Mathf.Sqrt(sandPictures[i].mask.Length)) : SandSimulator.GRID_SIZE);
                 simulator.SetShapeMask(sandPictures[i].mask);
                 simulator.RenderToTexture();
             }
@@ -586,6 +587,8 @@ namespace SandFlowPuzzle
                     popupTMP.color = new Color(popupTMP.color.r, popupTMP.color.g, popupTMP.color.b, 0f);
             }
 
+            // Check the two-pixel contact band before gravity can move grains past it.
+            if (collectorManager != null) collectorManager.TickSuction();
             foreach (SandPictureRuntime picture in sandPictures)
             {
                 picture.simulator.SimulateGravity();

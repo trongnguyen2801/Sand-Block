@@ -21,12 +21,13 @@ namespace SandFlowPuzzle.BlockAuthoring
                 bool[] mask = region == null ? null : SandBoardUtility.Mask(region);
                 int size = Mathf.RoundToInt(Mathf.Sqrt(picture.sandGrid.Count));
                 if (size <= 0 || size * size != picture.sandGrid.Count) continue;
-                for (int y = 0; y < SandSimulator.GRID_SIZE; y++)
-                    for (int x = 0; x < SandSimulator.GRID_SIZE; x++)
+                int runtimeSize = region == null ? SandSimulator.GRID_SIZE : SandBoardUtility.GridSize(region);
+                for (int y = 0; y < runtimeSize; y++)
+                    for (int x = 0; x < runtimeSize; x++)
                     {
-                        if (mask != null && !mask[y * SandSimulator.GRID_SIZE + x]) continue;
-                        int sx = Mathf.Min(Mathf.FloorToInt((x + 0.5f) * size / SandSimulator.GRID_SIZE), size - 1);
-                        int sy = Mathf.Min(Mathf.FloorToInt((y + 0.5f) * size / SandSimulator.GRID_SIZE), size - 1);
+                        if (mask != null && !mask[y * runtimeSize + x]) continue;
+                        int sx = Mathf.Min(Mathf.FloorToInt((x + 0.5f) * size / runtimeSize), size - 1);
+                        int sy = Mathf.Min(Mathf.FloorToInt((y + 0.5f) * size / runtimeSize), size - 1);
                         int id = picture.sandGrid[sy * size + sx];
                         if (id > 0) counts[id] = counts.TryGetValue(id, out int count) ? count + 1 : 1;
                     }

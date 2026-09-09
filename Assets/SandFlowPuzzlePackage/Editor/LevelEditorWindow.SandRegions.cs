@@ -8,6 +8,63 @@ namespace SandFlowPuzzle
 {
     public partial class LevelEditorWindow
     {
+        private int tilePaintMode;
+        private Vector2Int areaPaintStart;
+        private byte[] areaPaintOriginal;
+        private int tilePaintControl;
+        private int tilePaintButton;
+        private byte tileStrokeColor;
+        private TilePaintCanvas tileCanvas;
+        private SandPictureData tileCanvasPicture;
+        private Texture2D tileCanvasTexture;
+        private bool tileCanvasDirty = true;
+        private bool showTileGrid = true;
+        private float tileCanvasZoom = 1f;
+        private Vector2 tileCanvasScroll;
+        private readonly List<byte[]> tileUndo = new List<byte[]>();
+        private readonly List<byte[]> tileRedo = new List<byte[]>();
+        private int tilePaletteHash;
+
+        private void EndTilePaintStroke()
+        {
+            if (areaPaintOriginal != null && tileCanvasPicture != null)
+                RememberTileEdit(areaPaintOriginal);
+            if (tilePaintControl != 0 && GUIUtility.hotControl == tilePaintControl)
+                GUIUtility.hotControl = 0;
+            tilePaintControl = 0;
+            previousPaintCell = null;
+            areaPaintOriginal = null;
+        }
+
+        private void RememberTileEdit(byte[] before)
+        {
+            if (before.Length != tileCanvasPicture.sandGrid.Count) return;
+            bool changed = false;
+            for (int i = 0; i < before.Length; i++)
+                if (before[i] != tileCanvasPicture.sandGrid[i]) { changed = true; break; }
+            if (!changed) return;
+            tileUndo.Add(before);
+            if (tileUndo.Count > 50) tileUndo.RemoveAt(0);
+            tileRedo.Clear();
+        }
+
+        private void RestoreTilePixels(byte[] pixels)
+        {
+            for (int i = 0; i < pixels.Length; i++) tileCanvasPicture.sandGrid[i] = pixels[i];
+            TilesChanged(Event.current);
+        }
+
+        private void StepTileHistory(bool redo)
+        {
+            var source = redo ? tileRedo : tileUndo;
+            var target = redo ? tileUndo : tileRedo;
+            if (source.Count == 0) return;
+            target.Add(tileCanvasPicture.sandGrid.ToArray());
+            byte[] pixels = source[source.Count - 1];
+            source.RemoveAt(source.Count - 1);
+            RestoreTilePixels(pixels);
+        }
+
         private readonly Dictionary<int, Texture2D> boardPictureTextures = new Dictionary<int, Texture2D>();
         private readonly Dictionary<int, int> boardPictureHashes = new Dictionary<int, int>();
 
@@ -94,314 +151,209 @@ namespace SandFlowPuzzle
             return texture;
         }
 
-        // ───────────────────────────────────────────────────────────────────
-        // Selected Cells Painter — the right-panel paint tile canvas
-        // ───────────────────────────────────────────────────────────────────
-
-        /// <summary>
-        /// Draws the paint canvas for the currently selected cells.
-        /// Each selected cell is rendered as an 11x11 tile area. The canvas shows the
-        /// sand picture content for those cells, and the user can paint directly on it.
-        /// </summary>
         private void DrawSelectedCellsPainter(LevelData level, RectInt cellBounds)
         {
-            int count = level.sandPictures != null && level.sandPictures.Count > 0 ? level.sandPictures.Count : 1;
-            string[] options = new string[count];
-            for (int i = 0; i < count; i++) options[i] = $"Picture {i + 1}: {(level.sandPictures != null && i < level.sandPictures.Count ? level.sandPictures[i].levelName : level.levelName)}";
-            int next = EditorGUILayout.Popup("Paint for picture", Mathf.Clamp(selectedPictureIndex, 0, count - 1), options);
-            if (next != selectedPictureIndex)
-            {
-                selectedPictureIndex = next;
-                PrepareSelectedTiles();
-                RegeneratePreview();
-            }
-
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.LabelField("Paint Tiles", EditorStyles.boldLabel);
             SandPictureData picture = GetSelectedPicture();
-            if (picture.sandGrid == null || picture.sandGrid.Count != picture.gridSize * picture.gridSize)
+            if (picture.gridSize < 1 || picture.sandGrid == null || picture.sandGrid.Count != picture.gridSize * picture.gridSize)
             {
                 EditorGUILayout.HelpBox("Selected picture has invalid grid data.", MessageType.Warning);
+                EditorGUILayout.EndVertical();
                 return;
             }
-
-            // Ensure palette
             if (picture.palette == null || picture.palette.Count == 0)
             {
                 picture.palette = CreateDefaultTilePalette();
                 dirty = true;
             }
-
-            // ── Paint color palette ────────────────────────────────────────
+            if (!ReferenceEquals(tileCanvasPicture, picture) || tileCanvas == null
+                || !tileCanvas.Matches(blockState.SelectedCells, picture.gridSize))
+            {
+                EndTilePaintStroke();
+                tileCanvasPicture = picture;
+                tileCanvas = new TilePaintCanvas(blockState.SelectedCells, cellBounds);
+                if (picture.gridSize != tileCanvas.Size)
+                {
+                    SandBoardUtility.ResizePicture(picture, tileCanvas.Size);
+                    TilesChanged(Event.current);
+                }
+                tileUndo.Clear();
+                tileRedo.Clear();
+                tileCanvasDirty = true;
+            }
+            EditorGUILayout.LabelField($"{tileCanvas.CellCount} cells • 11 × 11 pixels/cell • {tileCanvas.Width} × {tileCanvas.Height} canvas • {tileCanvas.PaintableCount} paintable pixels", EditorStyles.wordWrappedMiniLabel);
             selectedTileColorId = Mathf.Clamp(selectedTileColorId, 0, picture.palette.Count);
             DrawTilePalette(picture);
-            tileBrushRadius = EditorGUILayout.IntSlider("Brush Radius", tileBrushRadius, 0, 5);
-
-            EditorGUILayout.HelpBox(
-                "Paint on the canvas below. Left-drag paints, right-drag erases. The canvas shows each selected cell as an 11x11 tile.",
-                MessageType.Info);
-
-            // ── Calculate canvas size ──────────────────────────────────────
-            // Each cell = 11x11 display pixels; total canvas matches cell aspect ratio
-            int tilesPerCell = SandSimulator.GRID_SIZE; // 35
-            int canvasCellW = cellBounds.width;
-            int canvasCellH = cellBounds.height;
-            int sandW = canvasCellW * tilesPerCell;
-            int sandH = canvasCellH * tilesPerCell;
-
-            // Cap the display size so it fits in the panel
-            float maxDisplaySize = Mathf.Min(440f, Mathf.Max(240f, position.width - 260f));
-            float displayW, displayH;
-            if (sandW >= sandH)
+            int paletteHash = 17;
+            unchecked { foreach (var color in picture.palette) paletteHash = paletteHash * 31 + CollectorBoardUtility.ColorKey(color); }
+            if (tilePaletteHash != paletteHash)
             {
-                displayW = maxDisplaySize;
-                displayH = maxDisplaySize * sandH / sandW;
+                tilePaletteHash = paletteHash;
+                tileUndo.Clear();
+                tileRedo.Clear();
+                tileCanvasDirty = true;
+            }
+            tilePaintMode = GUILayout.Toolbar(tilePaintMode, new[] { "Fill Area", "Brush", "Eraser" }, GUILayout.Height(28));
+            if (tilePaintMode != 0)
+                tileBrushRadius = EditorGUILayout.IntSlider("Brush radius", tileBrushRadius, 0, 5);
+
+            EditorGUILayout.BeginHorizontal();
+            using (new EditorGUI.DisabledScope(tileUndo.Count == 0))
+                if (GUILayout.Button("Undo")) StepTileHistory(false);
+            using (new EditorGUI.DisabledScope(tileRedo.Count == 0))
+                if (GUILayout.Button("Redo")) StepTileHistory(true);
+            if (GUILayout.Button("Fill selected")) FillTileSelection((byte)selectedTileColorId);
+            if (GUILayout.Button("Clear selected")) FillTileSelection(0);
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.HelpBox("Drag to paint; right-drag to erase. Fill Area fills a rectangle. Dark cells are not selected. Esc cancels the current stroke.", MessageType.None);
+
+            EditorGUILayout.BeginHorizontal();
+            showTileGrid = GUILayout.Toggle(showTileGrid, "Tile grid", GUILayout.Width(75));
+            GUILayout.Label("Zoom", GUILayout.Width(35));
+            tileCanvasZoom = GUILayout.HorizontalSlider(tileCanvasZoom, 1f, 3f);
+            if (GUILayout.Button("Fit", GUILayout.Width(40))) tileCanvasZoom = 1f;
+            EditorGUILayout.EndHorizontal();
+
+            float available = Mathf.Max(180f, position.width - 270f);
+            float pixelSize = Mathf.Min(available / tileCanvas.Width, 400f / tileCanvas.Height) * tileCanvasZoom;
+            float displayW = tileCanvas.Width * pixelSize;
+            float displayH = tileCanvas.Height * pixelSize;
+            tileCanvasScroll = EditorGUILayout.BeginScrollView(tileCanvasScroll, GUILayout.Height(Mathf.Min(displayH + 22f, 440f)));
+            Rect rect = GUILayoutUtility.GetRect(displayW, displayH, GUILayout.Width(displayW), GUILayout.Height(displayH));
+            if (Event.current.type == EventType.Repaint)
+            {
+                UpdateTileCanvasTexture(picture);
+                GUI.DrawTexture(rect, tileCanvasTexture, ScaleMode.StretchToFill);
+                if (showTileGrid && pixelSize >= 7f)
+                {
+                    Color line = new Color(0, 0, 0, .2f);
+                    for (int x = 1; x < tileCanvas.Width; x++) EditorGUI.DrawRect(new Rect(rect.x + x * pixelSize, rect.y, 1, rect.height), line);
+                    for (int y = 1; y < tileCanvas.Height; y++) EditorGUI.DrawRect(new Rect(rect.x, rect.y + y * pixelSize, rect.width, 1), line);
+                }
+                foreach (var cell in blockState.SelectedCells)
+                {
+                    RectInt pixels = tileCanvas.CellPixels(cell);
+                    Rect cellRect = new Rect(rect.x + pixels.x * pixelSize, rect.y + pixels.y * pixelSize, pixels.width * pixelSize, pixels.height * pixelSize);
+                    LevelEditorGridRenderer.DrawRectBorder(cellRect, new Color(.4f, .8f, 1f), 2f);
+                }
+            }
+            EditorGUIUtility.AddCursorRect(rect, MouseCursor.ArrowPlus);
+            if (Event.current.type == EventType.MouseMove && rect.Contains(Event.current.mousePosition)) Repaint();
+            if (Event.current.type == EventType.Repaint && rect.Contains(Event.current.mousePosition))
+            {
+                int x = Mathf.FloorToInt((Event.current.mousePosition.x - rect.x) / pixelSize);
+                int y = Mathf.FloorToInt((Event.current.mousePosition.y - rect.y) / pixelSize);
+                if (tileCanvas.TryGetIndex(x, y, out _))
+                    LevelEditorGridRenderer.DrawRectBorder(new Rect(rect.x + x * pixelSize, rect.y + y * pixelSize, pixelSize, pixelSize), Color.white, 2f);
+            }
+            HandleSelectedCellsPainting(picture, rect);
+            EditorGUILayout.EndScrollView();
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button("Apply to board", GUILayout.Height(28))) ApplySelectedCellsSandRegion(level, cellBounds);
+            EditorGUILayout.EndHorizontal();
+            EditorGUILayout.EndVertical();
+        }
+
+        private void UpdateTileCanvasTexture(SandPictureData picture)
+        {
+            if (!tileCanvasDirty && tileCanvasTexture != null) return;
+            if (tileCanvasTexture == null || tileCanvasTexture.width != tileCanvas.Width || tileCanvasTexture.height != tileCanvas.Height)
+            {
+                if (tileCanvasTexture != null) DestroyImmediate(tileCanvasTexture);
+                tileCanvasTexture = new Texture2D(tileCanvas.Width, tileCanvas.Height, TextureFormat.RGBA32, false)
+                { filterMode = FilterMode.Point, hideFlags = HideFlags.HideAndDontSave };
+            }
+            var colors = new Color32[tileCanvas.Width * tileCanvas.Height];
+            for (int y = 0; y < tileCanvas.Height; y++)
+                for (int x = 0; x < tileCanvas.Width; x++)
+                {
+                    Color color = new Color(.12f, .12f, .12f);
+                    if (tileCanvas.TryGetIndex(x, y, out int index))
+                    {
+                        byte id = picture.sandGrid[index];
+                        color = (x + y) % 2 == 0 ? new Color(.31f, .31f, .31f) : new Color(.35f, .35f, .35f);
+                        if (id > 0 && id <= picture.palette.Count)
+                        {
+                            var c = picture.palette[id - 1];
+                            color = new Color(c.r, c.g, c.b);
+                        }
+                    }
+                    colors[(tileCanvas.Height - 1 - y) * tileCanvas.Width + x] = color;
+                }
+            tileCanvasTexture.SetPixels32(colors);
+            tileCanvasTexture.Apply(false);
+            tileCanvasDirty = false;
+        }
+
+        private void FillTileSelection(byte color)
+        {
+            byte[] before = tileCanvasPicture.sandGrid.ToArray();
+            tileCanvas.Fill(tileCanvasPicture.sandGrid, Vector2Int.zero, new Vector2Int(tileCanvas.Width - 1, tileCanvas.Height - 1), color);
+            RememberTileEdit(before);
+            TilesChanged(Event.current);
+        }
+
+        private void HandleSelectedCellsPainting(SandPictureData picture, Rect rect)
+        {
+            Event e = Event.current;
+            int id = GUIUtility.GetControlID(FocusType.Passive, rect);
+            if (e.type == EventType.KeyDown && e.keyCode == KeyCode.Escape && tilePaintControl != 0)
+            {
+                RestoreTilePixels(areaPaintOriginal);
+                areaPaintOriginal = null;
+                EndTilePaintStroke();
+                e.Use();
+                return;
+            }
+            if (e.rawType == EventType.MouseUp && tilePaintControl != 0 && e.button == tilePaintButton)
+            {
+                EndTilePaintStroke();
+                e.Use();
+                Repaint();
+                return;
+            }
+            bool down = e.type == EventType.MouseDown;
+            if (!down && e.type != EventType.MouseDrag) return;
+            if (e.button != 0 && e.button != 1) return;
+            Vector2 local = e.mousePosition - rect.position;
+            var end = new Vector2Int(Mathf.Clamp(Mathf.FloorToInt(local.x / rect.width * tileCanvas.Width), 0, tileCanvas.Width - 1),
+                Mathf.Clamp(Mathf.FloorToInt(local.y / rect.height * tileCanvas.Height), 0, tileCanvas.Height - 1));
+            if (down)
+            {
+                if (!rect.Contains(e.mousePosition) || GUIUtility.hotControl != 0 || !tileCanvas.TryGetIndex(end.x, end.y, out _)) return;
+                tilePaintControl = id;
+                tilePaintButton = e.button;
+                tileStrokeColor = e.button == 1 || tilePaintMode == 2 ? (byte)0 : (byte)selectedTileColorId;
+                GUIUtility.hotControl = id;
+                areaPaintStart = end;
+                areaPaintOriginal = picture.sandGrid.ToArray();
+            }
+            else if (tilePaintControl != id || GUIUtility.hotControl != id || e.button != tilePaintButton) return;
+            if (tilePaintMode == 0)
+            {
+                for (int i = 0; i < areaPaintOriginal.Length; i++) picture.sandGrid[i] = areaPaintOriginal[i];
+                tileCanvas.Fill(picture.sandGrid, areaPaintStart, end, tileStrokeColor);
             }
             else
             {
-                displayH = maxDisplaySize;
-                displayW = maxDisplaySize * sandW / sandH;
-            }
-
-            // ── Draw the paint canvas ──────────────────────────────────────
-            Rect canvasRect = GUILayoutUtility.GetRect(displayW, displayH, GUILayout.Width(displayW), GUILayout.Height(displayH));
-            EditorGUI.DrawRect(canvasRect, new Color(0.18f, 0.18f, 0.18f));
-
-            // Build the preview texture for the selected cells
-            Texture2D cellPreview = BuildSelectedCellsPreview(picture, cellBounds, sandW, sandH);
-            if (cellPreview != null)
-            {
-                EditorGUI.DrawPreviewTexture(canvasRect, cellPreview, null, ScaleMode.StretchToFill);
-                DestroyImmediate(cellPreview);
-            }
-
-            // Draw cell grid lines on the canvas
-            float cellDisplayW = displayW / canvasCellW;
-            float cellDisplayH = displayH / canvasCellH;
-            Color gridColor = new Color(1f, 1f, 1f, 0.25f);
-            for (int cx = 1; cx < canvasCellW; cx++)
-            {
-                float x = canvasRect.x + cx * cellDisplayW;
-                EditorGUI.DrawRect(new Rect(x, canvasRect.y, 1f, canvasRect.height), gridColor);
-            }
-            for (int cy = 1; cy < canvasCellH; cy++)
-            {
-                float y = canvasRect.y + cy * cellDisplayH;
-                EditorGUI.DrawRect(new Rect(canvasRect.x, y, canvasRect.width, 1f), gridColor);
-            }
-
-            // Draw sub-cell grid lines (every 11 pixels within each cell)
-            Color subGridColor = new Color(0.5f, 0.5f, 0.5f, 0.12f);
-            float pxW = displayW / sandW;
-            float pxH = displayH / sandH;
-            for (int sx = 1; sx < sandW; sx++)
-            {
-                if (sx % tilesPerCell == 0) continue; // skip cell boundaries (already drawn)
-                float x = canvasRect.x + sx * pxW;
-                EditorGUI.DrawRect(new Rect(x, canvasRect.y, 1f, canvasRect.height), subGridColor);
-            }
-            for (int sy = 1; sy < sandH; sy++)
-            {
-                if (sy % tilesPerCell == 0) continue;
-                float y = canvasRect.y + sy * pxH;
-                EditorGUI.DrawRect(new Rect(canvasRect.x, y, canvasRect.width, 1f), subGridColor);
-            }
-
-            LevelEditorGridRenderer.DrawRectBorder(canvasRect, Color.gray, 1f);
-
-            // ── Handle painting on the canvas ──────────────────────────────
-            HandleSelectedCellsPainting(picture, cellBounds, canvasRect, sandW, sandH);
-
-            // ── Action buttons ─────────────────────────────────────────────
-            EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("Apply Sand Placement"))
-            {
-                ApplySelectedCellsSandRegion(level, cellBounds);
-            }
-            if (GUILayout.Button("Edit Existing Region"))
-            {
-                // Load an existing region's cells into the selection
-                var existingRegion = SandBoardUtility.FindRegion(blockDocument.Data, selectedPictureIndex);
-                if (existingRegion != null)
+                Vector2Int start = previousPaintCell ?? end;
+                int steps = Mathf.Max(Mathf.Abs(end.x - start.x), Mathf.Abs(end.y - start.y));
+                for (int step = 0; step <= steps; step++)
                 {
-                    blockState.ClearCellSelection();
-                    foreach (var c in existingRegion.occupiedCells)
-                        blockState.AddCell(new Vector2Int(c.x, c.y));
-                    PrepareSelectedTiles();
-                    RegeneratePreview();
-                }
-                else
-                {
-                    blockError = "No sand region found for this picture.";
+                    float t = steps == 0 ? 0 : step / (float)steps;
+                    int cx = Mathf.RoundToInt(Mathf.Lerp(start.x, end.x, t));
+                    int cy = Mathf.RoundToInt(Mathf.Lerp(start.y, end.y, t));
+                    for (int y = -tileBrushRadius; y <= tileBrushRadius; y++)
+                        for (int x = -tileBrushRadius; x <= tileBrushRadius; x++)
+                            if (x * x + y * y <= tileBrushRadius * tileBrushRadius && tileCanvas.TryGetIndex(cx + x, cy + y, out int index))
+                                picture.sandGrid[index] = tileStrokeColor;
                 }
             }
-            EditorGUILayout.EndHorizontal();
-
-            if (GUILayout.Button("Clear Sand in Selection"))
-            {
-                if (EditorUtility.DisplayDialog("Clear Sand", "Clear all sand in the selected cells for this picture?", "Clear", "Cancel"))
-                {
-                    ClearSandInSelection(picture, cellBounds);
-                }
-            }
+            previousPaintCell = end;
+            TilesChanged(e);
+            e.Use();
         }
-
-        // ───────────────────────────────────────────────────────────────────
-        // Build preview texture for selected cells
-        // ───────────────────────────────────────────────────────────────────
-
-        private Texture2D BuildSelectedCellsPreview(SandPictureData picture, RectInt cellBounds, int sandW, int sandH)
-        {
-            int tilesPerCell = picture.gridSize;
-            int gs = picture.sandGrid.Count == tilesPerCell * tilesPerCell ? tilesPerCell : SandSimulator.GRID_SIZE;
-
-            var tex = new Texture2D(sandW, sandH, TextureFormat.RGBA32, false);
-            tex.filterMode = FilterMode.Point;
-            tex.wrapMode = TextureWrapMode.Clamp;
-            var pixels = new Color32[sandW * sandH];
-            Color32 empty = new Color32(85, 85, 85, 255);
-
-            for (int canvasY = 0; canvasY < sandH; canvasY++)
-            {
-                for (int canvasX = 0; canvasX < sandW; canvasX++)
-                {
-                    // Map canvas pixel to cell + local position
-                    int cellLocalX = canvasX % tilesPerCell;
-                    int cellLocalY = canvasY % tilesPerCell;
-                    int cellX = cellBounds.x + canvasX / tilesPerCell;
-                    int cellY = cellBounds.y + canvasY / tilesPerCell;
-
-                    // Map local cell position to sandGrid position
-                    // The sandGrid is split into a grid of cells; each cell gets a sub-area
-                    int gridW = cellBounds.width;
-                    int gridH = cellBounds.height;
-                    int cellIndexX = cellX - cellBounds.x;
-                    int cellIndexY = cellY - cellBounds.y;
-
-                    // Sub-area bounds in the sandGrid (Y-flipped for bottom-left convention)
-                    int subW = Mathf.CeilToInt((float)gs * (cellIndexX + 1) / gridW) - Mathf.CeilToInt((float)gs * cellIndexX / gridW);
-                    int subH = Mathf.CeilToInt((float)gs * (cellIndexY + 1) / gridH) - Mathf.CeilToInt((float)gs * cellIndexY / gridH);
-                    int subStartX = Mathf.CeilToInt((float)gs * cellIndexX / gridW);
-                    int subStartY = Mathf.CeilToInt((float)gs * cellIndexY / gridH);
-
-                    // Local pixel within the sub-area (Y-flipped)
-                    int localX = subW > 0 ? Mathf.Clamp(Mathf.FloorToInt((float)cellLocalX * subW / tilesPerCell), 0, subW - 1) : 0;
-                    int localY = subH > 0 ? Mathf.Clamp(Mathf.FloorToInt((float)cellLocalY * subH / tilesPerCell), 0, subH - 1) : 0;
-
-                    // sandGrid Y is bottom-up, canvas Y is top-down
-                    int gridX = subStartX + localX;
-                    int gridY = (gs - 1) - (subStartY + localY);
-                    gridX = Mathf.Clamp(gridX, 0, gs - 1);
-                    gridY = Mathf.Clamp(gridY, 0, gs - 1);
-
-                    int gridIdx = gridY * gs + gridX;
-                    byte colorId = gridIdx >= 0 && gridIdx < picture.sandGrid.Count ? picture.sandGrid[gridIdx] : (byte)0;
-
-                    // Top-down pixel index
-                    int dstIdx = (sandH - 1 - canvasY) * sandW + canvasX;
-                    if (colorId == 0 || picture.palette == null || colorId > picture.palette.Count)
-                        pixels[dstIdx] = empty;
-                    else
-                    {
-                        SerializableColor sc = picture.palette[colorId - 1];
-                        pixels[dstIdx] = new Color32(
-                            (byte)(sc.r * 255f), (byte)(sc.g * 255f), (byte)(sc.b * 255f), 255);
-                    }
-                }
-            }
-
-            tex.SetPixels32(pixels);
-            tex.Apply();
-            return tex;
-        }
-
-        // ───────────────────────────────────────────────────────────────────
-        // Handle painting on the selected-cells canvas
-        // ───────────────────────────────────────────────────────────────────
-
-        private void HandleSelectedCellsPainting(SandPictureData picture, RectInt cellBounds, Rect canvasRect, int sandW, int sandH)
-        {
-            Event currentEvent = Event.current;
-            if (currentEvent.type == EventType.MouseUp) previousPaintCell = null;
-
-            bool isPaintEvent = currentEvent.type == EventType.MouseDown || currentEvent.type == EventType.MouseDrag;
-            if (!isPaintEvent || !canvasRect.Contains(currentEvent.mousePosition)) return;
-            if (currentEvent.button != 0 && currentEvent.button != 1) return;
-
-            int tilesPerCell = picture.gridSize;
-            int gs = picture.sandGrid.Count == tilesPerCell * tilesPerCell ? tilesPerCell : SandSimulator.GRID_SIZE;
-
-            Vector2 local = currentEvent.mousePosition - canvasRect.position;
-            int canvasX = Mathf.Clamp(Mathf.FloorToInt(local.x / canvasRect.width * sandW), 0, sandW - 1);
-            int canvasY = Mathf.Clamp(Mathf.FloorToInt(local.y / canvasRect.height * sandH), 0, sandH - 1);
-
-            byte colorId = currentEvent.button == 1
-                ? (byte)0
-                : (byte)Mathf.Clamp(selectedTileColorId, 0, byte.MaxValue);
-
-            // Interpolate for smooth strokes
-            Vector2Int endCell = new Vector2Int(canvasX, canvasY);
-            Vector2Int startCell = currentEvent.type == EventType.MouseDrag && previousPaintCell.HasValue
-                ? previousPaintCell.Value : endCell;
-            int steps = Mathf.Max(Mathf.Abs(endCell.x - startCell.x), Mathf.Abs(endCell.y - startCell.y));
-
-            for (int step = 0; step <= steps; step++)
-            {
-                float t = steps == 0 ? 0f : step / (float)steps;
-                int cx = Mathf.RoundToInt(Mathf.Lerp(startCell.x, endCell.x, t));
-                int cy = Mathf.RoundToInt(Mathf.Lerp(startCell.y, endCell.y, t));
-
-                // Apply brush radius
-                for (int offY = -tileBrushRadius; offY <= tileBrushRadius; offY++)
-                {
-                    for (int offX = -tileBrushRadius; offX <= tileBrushRadius; offX++)
-                    {
-                        if (offX * offX + offY * offY > tileBrushRadius * tileBrushRadius) continue;
-                        int px = cx + offX;
-                        int py = cy + offY;
-                        if (px < 0 || px >= sandW || py < 0 || py >= sandH) continue;
-
-                        PaintSandPixel(picture, cellBounds, px, py, sandW, sandH, gs, tilesPerCell, colorId);
-                    }
-                }
-            }
-
-            previousPaintCell = endCell;
-            TilesChanged(currentEvent);
-            currentEvent.Use();
-            Repaint();
-        }
-
-        private void PaintSandPixel(SandPictureData picture, RectInt cellBounds,
-            int canvasX, int canvasY, int sandW, int sandH, int gs, int tilesPerCell, byte colorId)
-        {
-            int cellLocalX = canvasX % tilesPerCell;
-            int cellLocalY = canvasY % tilesPerCell;
-            int cellX = cellBounds.x + canvasX / tilesPerCell;
-            int cellY = cellBounds.y + canvasY / tilesPerCell;
-
-            int gridW = cellBounds.width;
-            int gridH = cellBounds.height;
-            int cellIndexX = cellX - cellBounds.x;
-            int cellIndexY = cellY - cellBounds.y;
-
-            int subStartX = Mathf.CeilToInt((float)gs * cellIndexX / gridW);
-            int subStartY = Mathf.CeilToInt((float)gs * cellIndexY / gridH);
-            int subW = Mathf.CeilToInt((float)gs * (cellIndexX + 1) / gridW) - subStartX;
-            int subH = Mathf.CeilToInt((float)gs * (cellIndexY + 1) / gridH) - subStartY;
-
-            int localX = subW > 0 ? Mathf.Clamp(Mathf.FloorToInt((float)cellLocalX * subW / tilesPerCell), 0, subW - 1) : 0;
-            int localY = subH > 0 ? Mathf.Clamp(Mathf.FloorToInt((float)cellLocalY * subH / tilesPerCell), 0, subH - 1) : 0;
-
-            int gridX = Mathf.Clamp(subStartX + localX, 0, gs - 1);
-            int gridY = Mathf.Clamp((gs - 1) - (subStartY + localY), 0, gs - 1);
-
-            int gridIdx = gridY * gs + gridX;
-            if (gridIdx >= 0 && gridIdx < picture.sandGrid.Count)
-                picture.sandGrid[gridIdx] = colorId;
-        }
-
-        // ───────────────────────────────────────────────────────────────────
-        // Apply / Clear sand region from selection
-        // ───────────────────────────────────────────────────────────────────
 
         private void ApplySelectedCellsSandRegion(LevelData level, RectInt cellBounds)
         {
@@ -429,28 +381,16 @@ namespace SandFlowPuzzle
             }
         }
 
-        private void ClearSandInSelection(SandPictureData picture, RectInt cellBounds)
-        {
-            int tilesPerCell = picture.gridSize;
-            int gs = picture.sandGrid.Count == tilesPerCell * tilesPerCell ? tilesPerCell : SandSimulator.GRID_SIZE;
-
-            for (int canvasY = 0; canvasY < cellBounds.height * tilesPerCell; canvasY++)
-                for (int canvasX = 0; canvasX < cellBounds.width * tilesPerCell; canvasX++)
-                    PaintSandPixel(picture, cellBounds, canvasX, canvasY,
-                        cellBounds.width * tilesPerCell, cellBounds.height * tilesPerCell,
-                        gs, tilesPerCell, 0);
-
-            TilesChanged(Event.current);
-        }
-
         private void TilesChanged(Event evt)
         {
             SandPictureData picture = GetSelectedPicture();
             picture.sandSourceMode = SandSourceMode.Tiles;
             picture.sandPatternResourcePath = "";
             picture.sourceImagePath = "";
+            tileCanvasDirty = true;
             RegeneratePreview();
             dirty = true;
+            Repaint();
         }
     }
 }

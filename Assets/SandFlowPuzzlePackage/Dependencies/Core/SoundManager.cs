@@ -91,7 +91,7 @@ namespace HypercasualGameEngine
         public AudioClip dropMarblesBallToFillSound;
         public AudioClip dropMarblesFillBoxCompleteSound;
 
-        [Header("#16 Sand Flow Puzzle Sounds")]
+        [Header("Sand Flow Puzzle Sounds")]
         public AudioClip sandFlowBucketJumpSound;
         public AudioClip sandFlowBucketCompleteSound;
         public AudioClip sandFlowBeltFullSound;

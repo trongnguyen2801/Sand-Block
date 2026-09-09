@@ -19,7 +19,7 @@ public partial class LevelEditorWindow : EditorWindow
     private int tileBrushRadius = 0;
     private Vector2Int? previousPaintCell;
 
-    [MenuItem("Tools/#16 Sand Flow Puzzle/Level Editor")]
+    [MenuItem("Tools/Sand Flow Puzzle/Level Editor")]
     public static void ShowWindow()
     {
         var window = GetWindow<LevelEditorWindow>("Level Editor");
@@ -28,11 +28,19 @@ public partial class LevelEditorWindow : EditorWindow
 
     private void OnEnable()
     {
+        wantsMouseMove = true;
         LoadFromDisk();
+    }
+
+    private void OnLostFocus()
+    {
+        EndTilePaintStroke();
     }
 
     private void OnDisable()
     {
+        EndTilePaintStroke();
+        if (tileCanvasTexture != null) DestroyImmediate(tileCanvasTexture);
         CleanupPreview();
         foreach (var texture in boardPictureTextures.Values) if (texture != null) DestroyImmediate(texture);
         boardPictureTextures.Clear();
@@ -306,23 +314,16 @@ public partial class LevelEditorWindow : EditorWindow
 
     private void PrepareSelectedTiles()
     {
-        previousPaintCell = null;
+        EndTilePaintStroke();
+        tileCanvas = null;
         if (selectedIndex < 0 || selectedIndex >= levels.Count) return;
         SandPictureData picture = GetSelectedPicture();
-        int size = picture.sandGrid == null ? 0 : Mathf.RoundToInt(Mathf.Sqrt(picture.sandGrid.Count));
-        if (size != SandSimulator.GRID_SIZE || picture.gridSize != size)
+        var region = SandBoardUtility.FindRegion(levels[selectedIndex].collectorBoard, selectedPictureIndex);
+        int targetSize = region != null && region.occupiedCells.Count > 0
+            ? SandBoardUtility.GridSize(region) : Mathf.Max(1, picture.gridSize);
+        if (picture.gridSize != targetSize || picture.sandGrid == null || picture.sandGrid.Count != targetSize * targetSize)
         {
-            var cells = new List<byte>(new byte[SandSimulator.GRID_SIZE * SandSimulator.GRID_SIZE]);
-            if (size > 0 && picture.sandGrid.Count == size * size)
-                for (int y = 0; y < SandSimulator.GRID_SIZE; y++)
-                    for (int x = 0; x < SandSimulator.GRID_SIZE; x++)
-                    {
-                        int sx = Mathf.Min(Mathf.FloorToInt((x + 0.5f) * size / SandSimulator.GRID_SIZE), size - 1);
-                        int sy = Mathf.Min(Mathf.FloorToInt((y + 0.5f) * size / SandSimulator.GRID_SIZE), size - 1);
-                        cells[y * SandSimulator.GRID_SIZE + x] = picture.sandGrid[sy * size + sx];
-                    }
-            picture.sandGrid = cells;
-            picture.gridSize = SandSimulator.GRID_SIZE;
+            SandBoardUtility.ResizePicture(picture, targetSize);
             dirty = true;
         }
         if (picture.palette == null || picture.palette.Count == 0)
@@ -355,7 +356,7 @@ public partial class LevelEditorWindow : EditorWindow
 
         for (int i = 0; i < level.palette.Count; i++)
         {
-            if (i > 0 && i % 12 == 0) { EditorGUILayout.EndHorizontal(); EditorGUILayout.BeginHorizontal(); }
+            if (i > 0 && i % Mathf.Max(3, Mathf.FloorToInt((position.width - 360f) / 32f)) == 0) { EditorGUILayout.EndHorizontal(); EditorGUILayout.BeginHorizontal(); }
             SerializableColor serializable = level.palette[i];
             Color color = new Color(serializable.r, serializable.g, serializable.b, 1f);
             Rect swatch = GUILayoutUtility.GetRect(28f, 26f, GUILayout.Width(28f), GUILayout.Height(26f));

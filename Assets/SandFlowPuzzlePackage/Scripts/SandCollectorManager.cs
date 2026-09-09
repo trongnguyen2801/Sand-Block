@@ -14,8 +14,8 @@ namespace SandFlowPuzzle
 {
     /// <summary>
     /// Builds and controls DogJam-style draggable sand collectors.
-    /// Only the leading row of per-cell colliders can collect, and its world-X
-    /// footprint is converted into an exact mask of sand-grid columns.
+    /// Each cell face can collect from the first two pixel rows inward from
+    /// the contacted sand boundary, including concave region boundaries.
     /// </summary>
     public sealed class SandCollectorManager : MonoBehaviour
     {
@@ -23,6 +23,7 @@ namespace SandFlowPuzzle
         private const float FlyingGrainScaleMultiplier = 70f / SandSimulator.GRID_SIZE;
         private const float FlyingGrainStartScale = 0.055f * FlyingGrainScaleMultiplier;
         private const float FlyingGrainEndScale = 0.015f * FlyingGrainScaleMultiplier;
+        private const int RegionContactDepthPixels = 2;
 
         private struct FlyingGrain
         {
@@ -55,7 +56,6 @@ namespace SandFlowPuzzle
         [SerializeField] private int grainsPerSuction = 4;
         [SerializeField] private float suctionInterval = 0.04f;
         [SerializeField] private float suctionGap = 0.16f;
-        [SerializeField] private float suctionReach = 0.48f;
         [SerializeField] private float contactTolerance = 0.03f;
 
         [Header("Placement Grid")]
@@ -68,7 +68,6 @@ namespace SandFlowPuzzle
 
         private readonly List<SandCollectorBlock> blocks = new List<SandCollectorBlock>();
         private readonly List<Vector2Int> extractedPositions = new List<Vector2Int>(8);
-        private readonly bool[] contactGridColumns = new bool[SandSimulator.GRID_SIZE];
         private readonly Dictionary<int, Material> colorMaterials = new Dictionary<int, Material>();
         private readonly Dictionary<SandCollectorBlock, float> suctionCooldowns = new Dictionary<SandCollectorBlock, float>();
         private readonly List<FlyingGrain> flyingGrains = new List<FlyingGrain>(64);
@@ -82,7 +81,6 @@ namespace SandFlowPuzzle
         private readonly List<int> blockColorList = new List<int>();
         public bool HasFlyingGrains => flyingGrains.Count > 0;
         private BlockXLevelFile authoredBoard;
-        private readonly HashSet<Collider> boardObstacles = new HashSet<Collider>();
         private Camera mainCamera;
         private SandCollectorBlock draggedBlock;
         private Plane dragPlane;
@@ -401,6 +399,7 @@ namespace SandFlowPuzzle
                     if (!IsPlayableCell(column, row))
                     {
                         var obstacle = new GameObject($"DisabledBoardCell_{column}_{row}");
+                        obstacle.layer = Physics.IgnoreRaycastLayer;
                         obstacle.transform.SetParent(transform, false);
                         obstacle.transform.position = new Vector3(
                             placementGridMinX + (column + 0.5f) * blockCellSize,
@@ -408,7 +407,6 @@ namespace SandFlowPuzzle
                             placementGridMinZ + (row + 0.5f) * blockCellSize);
                         var collider = obstacle.AddComponent<BoxCollider>();
                         collider.size = new Vector3(blockCellSize, 0.8f, blockCellSize);
-                        boardObstacles.Add(collider);
                     }
                     float minX = placementGridMinX + column * blockCellSize + inset;
                     float maxX = placementGridMinX + (column + 1) * blockCellSize - inset;
@@ -672,10 +670,7 @@ namespace SandFlowPuzzle
             if (pictures == null) return;
 
             if (gameplayEnabled)
-            {
                 HandleDragInput();
-                UpdateSuction();
-            }
             UpdatePlacementGridHighlights();
             UpdateFlyingGrains();
         }
@@ -720,8 +715,10 @@ namespace SandFlowPuzzle
             }
         }
 
-        private void UpdateSuction()
+        public void TickSuction()
         {
+            if (!gameplayEnabled || pictures == null) return;
+
             for (int i = blocks.Count - 1; i >= 0; i--)
             {
                 SandCollectorBlock block = blocks[i];
@@ -737,7 +734,7 @@ namespace SandFlowPuzzle
                 suctionCooldowns[block] = cooldown;
                 if (cooldown > 0f) continue;
 
-                if (!block.TryGetBounds(out Bounds blockBounds)) continue;
+                if (!block.TryGetBounds(out _)) continue;
                 int budget = Mathf.Min(grainsPerSuction, block.Remaining);
                 int totalExtracted = 0;
 
@@ -760,16 +757,8 @@ namespace SandFlowPuzzle
                     {
                         if (budget <= 0 || block.IsCompleting) break;
                         extractedPositions.Clear();
-                        int extracted;
-                        if (authoredBoard != null && authoredBoard.sandInBoard)
-                            extracted = ExtractAtRegionContacts(block, picture, budget, (byte)targetColor);
-                        else
-                        {
-                            if (!BuildContactColumnMask(block, contactGridColumns, picture)) continue;
-                            int centerGridX = WorldXToGridX(blockBounds.center.x, picture);
-                            extracted = picture.simulator.ExtractExposedPixelsInColumns(
-                                centerGridX, (byte)targetColor, budget, extractedPositions, contactGridColumns);
-                        }
+                        int colorBudget = Mathf.Min(budget, block.RemainingForColor(targetColor));
+                        int extracted = ExtractAtRegionContacts(block, picture, colorBudget, (byte)targetColor);
                         if (extracted == 0) continue;
                         SpawnFlyingGrains(block, extractedPositions, picture);
                         block.Absorb(extracted, targetColor);
@@ -777,7 +766,7 @@ namespace SandFlowPuzzle
                         totalExtracted += extracted;
                     }
                 }
-                suctionCooldowns[block] = suctionInterval;
+                suctionCooldowns[block] = totalExtracted > 0 ? suctionInterval : 0f;
                 if (totalExtracted > 0 && HypercasualGameEngine.SoundManager.Instance != null)
                     HypercasualGameEngine.SoundManager.Instance.PlaySandFlowSandPour();
             }
@@ -785,42 +774,46 @@ namespace SandFlowPuzzle
 
         private int ExtractAtRegionContacts(SandCollectorBlock block, SandPictureRuntime picture, int budget, byte targetColor)
         {
-            if (picture.mask == null) return 0;
-            int n = SandSimulator.GRID_SIZE;
-            float pixel = (picture.max.x - picture.min.x) / n;
+            if (budget <= 0) return 0;
+            int n = picture.simulator.GridSize;
+            float pixelX = (picture.max.x - picture.min.x) / n;
+            float pixelZ = (picture.max.z - picture.min.z) / n;
+            bool legacyLayout = authoredBoard == null || !authoredBoard.sandInBoard;
             int count = 0;
             for (int y = 0; y < n && count < budget; y++)
             for (int x = 0; x < n && count < budget; x++)
             {
-                if (!picture.mask[y * n + x]) continue;
-                float cx = picture.min.x + (x + 0.5f) * pixel;
-                float cz = picture.max.z - (y + 0.5f) * pixel;
+                if (picture.mask != null && !picture.mask[y * n + x]) continue;
+                float cx = picture.min.x + (x + 0.5f) * pixelX;
+                float cz = picture.max.z - (y + 0.5f) * pixelZ;
                 for (int direction = 0; direction < 4 && count < budget; direction++)
                 {
                     int dx = direction == 0 ? -1 : direction == 1 ? 1 : 0;
                     int dy = direction == 2 ? -1 : direction == 3 ? 1 : 0;
                     int nx = x + dx, ny = y + dy;
-                    if (nx >= 0 && ny >= 0 && nx < n && ny < n && picture.mask[ny * n + nx]) continue;
-                    float edgeX = cx + dx * pixel * 0.5f;
-                    float edgeZ = cz - dy * pixel * 0.5f;
+                    if (nx >= 0 && ny >= 0 && nx < n && ny < n && (picture.mask == null || picture.mask[ny * n + nx])) continue;
+                    float edgeX = cx + dx * pixelX * 0.5f;
+                    float edgeZ = cz - dy * pixelZ * 0.5f;
                     bool contact = false;
                     foreach (Collider collider in block.CellColliders)
                     {
-                        if (collider == null || !collider.enabled) continue;
+                        if (collider == null || !collider.enabled || !collider.gameObject.activeInHierarchy) continue;
                         Bounds b = collider.bounds;
-                        float tolerance = blockCellSize * 0.13f;
+                        float tolerance = Mathf.Max(contactTolerance, blockCellSize * 0.13f);
+                        // Older layouts reserve a gap below the picture for the collector lane.
+                        float bottomGap = legacyLayout && dy > 0 ? suctionGap : 0f;
                         if (dx != 0)
-                            contact = cz + pixel * 0.45f > b.min.z && cz - pixel * 0.45f < b.max.z
+                            contact = cz + pixelZ * 0.5f > b.min.z && cz - pixelZ * 0.5f < b.max.z
                                 && (dx < 0 ? b.center.x < edgeX && Mathf.Abs(b.max.x - edgeX) <= tolerance
                                     : b.center.x > edgeX && Mathf.Abs(b.min.x - edgeX) <= tolerance);
                         else
-                            contact = cx + pixel * 0.45f > b.min.x && cx - pixel * 0.45f < b.max.x
+                            contact = cx + pixelX * 0.5f > b.min.x && cx - pixelX * 0.5f < b.max.x
                                 && (dy < 0 ? b.center.z > edgeZ && Mathf.Abs(b.min.z - edgeZ) <= tolerance
-                                    : b.center.z < edgeZ && Mathf.Abs(b.max.z - edgeZ) <= tolerance);
+                                    : b.center.z < edgeZ && Mathf.Abs(b.max.z + bottomGap - edgeZ) <= tolerance);
                         if (contact) break;
                     }
                     if (contact) count += picture.simulator.ExtractFromEdge(x, y, -dx, -dy,
-                        targetColor, budget - count, extractedPositions);
+                        targetColor, RegionContactDepthPixels, budget - count, extractedPositions);
                 }
             }
             return count;
@@ -836,8 +829,8 @@ namespace SandFlowPuzzle
             for (int i = 0; i < pixelPositions.Count; i++)
             {
                 Vector2Int gridPosition = pixelPositions[i];
-                float u = (gridPosition.x + 0.5f) / SandSimulator.GRID_SIZE;
-                float v = 1f - (gridPosition.y + 0.5f) / SandSimulator.GRID_SIZE;
+                float u = (gridPosition.x + 0.5f) / picture.simulator.GridSize;
+                float v = 1f - (gridPosition.y + 0.5f) / picture.simulator.GridSize;
                 float localX = (u - image.uvRect.x) / image.uvRect.width;
                 float localY = (v - image.uvRect.y) / image.uvRect.height;
                 Vector3 startPosition = image.rectTransform.TransformPoint(new Vector3(
@@ -924,90 +917,6 @@ namespace SandFlowPuzzle
             grain.SetActive(false);
             grain.transform.SetParent(transform, false);
             grainPool.Push(grain);
-        }
-
-        private bool BuildContactColumnMask(SandCollectorBlock block, bool[] columnMask, SandPictureRuntime picture)
-        {
-            System.Array.Clear(columnMask, 0, columnMask.Length);
-
-            IReadOnlyList<Collider> colliders = block.CellColliders;
-            float leadingEdgeZ = float.NegativeInfinity;
-            for (int i = 0; i < colliders.Count; i++)
-            {
-                Collider cell = colliders[i];
-                if (cell == null || !cell.enabled || !cell.gameObject.activeInHierarchy) continue;
-                leadingEdgeZ = Mathf.Max(leadingEdgeZ, cell.bounds.max.z);
-            }
-
-            float pictureBottomZ = picture.min.z;
-            float distanceBelowPicture = pictureBottomZ - leadingEdgeZ;
-            if (float.IsNegativeInfinity(leadingEdgeZ)
-                || distanceBelowPicture < suctionGap - contactTolerance
-                || distanceBelowPicture > suctionReach + contactTolerance)
-                return false;
-
-            // Collection belongs exclusively to the first placement-grid row
-            // below the picture. The old distance-only test also admitted row 2.
-            int leadingGridRow = Mathf.FloorToInt(
-                (leadingEdgeZ - placementGridMinZ - 0.001f) / blockCellSize);
-            if (leadingGridRow != placementGridRows - 1)
-                return false;
-
-            bool foundContactCell = false;
-            float rowTolerance = Mathf.Max(0.01f, blockCellSize * 0.2f);
-            for (int i = 0; i < colliders.Count; i++)
-            {
-                Collider cell = colliders[i];
-                if (cell == null || !cell.enabled || !cell.gameObject.activeInHierarchy) continue;
-                if (leadingEdgeZ - cell.bounds.max.z > rowTolerance) continue;
-
-                MarkContactColumns(cell.bounds.min.x, cell.bounds.max.x, columnMask, picture);
-                foundContactCell = true;
-            }
-
-            if (!foundContactCell && block.TryGetBounds(out Bounds bounds))
-            {
-                MarkContactColumns(bounds.min.x, bounds.max.x, columnMask, picture);
-                foundContactCell = true;
-            }
-
-            return foundContactCell;
-        }
-
-        private void MarkContactColumns(float worldMinX, float worldMaxX, bool[] columnMask, SandPictureRuntime picture)
-        {
-            float clippedMinX = Mathf.Max(worldMinX, picture.min.x);
-            float clippedMaxX = Mathf.Min(worldMaxX, picture.max.x);
-            if (clippedMinX > clippedMaxX) return;
-
-            float maxGridIndex = SandSimulator.GRID_SIZE - 1;
-            int minGridX = Mathf.Clamp(
-                Mathf.CeilToInt(Mathf.InverseLerp(picture.min.x, picture.max.x, clippedMinX) * maxGridIndex),
-                0,
-                SandSimulator.GRID_SIZE - 1);
-            int maxGridX = Mathf.Clamp(
-                Mathf.FloorToInt(Mathf.InverseLerp(picture.min.x, picture.max.x, clippedMaxX) * maxGridIndex),
-                0,
-                SandSimulator.GRID_SIZE - 1);
-
-            if (minGridX > maxGridX)
-            {
-                int nearest = WorldXToGridX((clippedMinX + clippedMaxX) * 0.5f, picture);
-                columnMask[nearest] = true;
-                return;
-            }
-
-            for (int x = minGridX; x <= maxGridX; x++)
-                columnMask[x] = true;
-        }
-
-        private int WorldXToGridX(float worldX, SandPictureRuntime picture)
-        {
-            float normalizedX = Mathf.InverseLerp(picture.min.x, picture.max.x, worldX);
-            return Mathf.Clamp(
-                Mathf.RoundToInt(normalizedX * (SandSimulator.GRID_SIZE - 1)),
-                0,
-                SandSimulator.GRID_SIZE - 1);
         }
 
         public Vector3 ClampToPlayArea(SandCollectorBlock block, Vector3 requestedPosition)
@@ -1119,7 +1028,6 @@ namespace SandFlowPuzzle
                     Collider overlap = overlaps[j];
                     if (overlap == null || overlap.transform.IsChildOf(block.transform)) continue;
 
-                    if (boardObstacles.Contains(overlap)) { collisionFound = true; break; }
                     SandCollectorBlock otherBlock = overlap.GetComponentInParent<SandCollectorBlock>();
                     if (otherBlock != null && otherBlock != block && !otherBlock.IsCompleting)
                     {
